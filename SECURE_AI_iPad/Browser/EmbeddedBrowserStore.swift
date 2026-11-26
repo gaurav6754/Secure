@@ -27,7 +27,7 @@ final class EmbeddedBrowserStore: ObservableObject {
     }
     @Published var zoomLevel: Double {
         didSet {
-            UserDefaults.standard.set(zoomLevel, forKey: "secure_ai_browser_zoom_chrome_v6")
+            UserDefaults.standard.set(zoomLevel, forKey: "secure_ai_browser_zoom_native_v8")
             applyZoom()
         }
     }
@@ -38,13 +38,13 @@ final class EmbeddedBrowserStore: ObservableObject {
     static let desktopUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
     init() {
-        let saved = UserDefaults.standard.double(forKey: "secure_ai_browser_zoom_chrome_v6")
+        let saved = UserDefaults.standard.double(forKey: "secure_ai_browser_zoom_native_v8")
         // Default 100% = Exact Chrome-on-iPad native edge-to-edge layout (zero shrinking or white space)
-        self.zoomLevel = (saved >= 0.70 && saved <= 1.25) ? saved : 1.0
+        self.zoomLevel = (saved >= 0.50 && saved <= 1.25) ? saved : 1.0
     }
 
     func zoomOut() {
-        zoomLevel = max(0.70, (zoomLevel - 0.05).roundedToTwo)
+        zoomLevel = max(0.50, (zoomLevel - 0.05).roundedToTwo)
     }
 
     func zoomIn() {

@@ -24,8 +24,6 @@ targets:
       - path: SECURE_AI_iPad/Views
       - path: SECURE_AI_iPad/Resources
         buildPhase: resources
-    info:
-      path: SECURE_AI_iPad/Info.plist
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.secureai.ipad.pro
@@ -33,7 +31,7 @@ targets:
         INFOPLIST_FILE: SECURE_AI_iPad/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         MARKETING_VERSION: "3.0.10"
-        CURRENT_PROJECT_VERSION: "3015"
+        CURRENT_PROJECT_VERSION: "3016"
     frameworks:
       - sdk: WebKit.framework
       - sdk: PDFKit.framework

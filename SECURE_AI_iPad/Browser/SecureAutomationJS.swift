@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V7__) return;
+      if (window.__SECURE_AI_IPAD_V8__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -90,6 +90,13 @@ enum SecureAutomationJS {
         if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0) return false;
         const rect = el.getBoundingClientRect();
         return rect.width > 1 && rect.height > 1;
+      }
+
+      function getCheckboxTarget(cb) {
+        if (!cb) return null;
+        if (isVisible(cb)) return cb;
+        const wrap = cb.closest('mat-checkbox, label, .form-check, .custom-control, .mdc-checkbox');
+        return (wrap && isVisible(wrap)) ? wrap : null;
       }
 
       function blurKeyboard() {
@@ -255,39 +262,64 @@ enum SecureAutomationJS {
 
       async function openAddAppendixForm() {
         let form = findActiveAppendixForm();
-        if (form) return form;
+        if (form) return { form, diag: 'already-open' };
 
+        const vw = window.innerWidth || 1024;
+        const vh = window.innerHeight || 768;
+
+        // 1. Find the SMALL leaf label for "LMR Location" (never a tall outer wrapper div!)
         let lmrRect = null;
-        for (const n of queryAllAcrossDocs('label, span, div, td, p')) {
-          if (!isVisible(n) || n.children.length > 2) continue;
-          if ((n.textContent || '').trim().toLowerCase().startsWith('lmr location')) {
-            lmrRect = n.getBoundingClientRect();
-            break;
+        let lmrBestArea = Infinity;
+        for (const n of queryAllAcrossDocs('label, span, div, td, p, b, strong')) {
+          if (!isVisible(n)) continue;
+          const t = (n.textContent || '').trim();
+          if (t.length > 45) continue;
+          if (!t.toLowerCase().startsWith('lmr location')) continue;
+          const r = n.getBoundingClientRect();
+          if (r.height < 8 || r.height > 65 || r.top < 20 || r.bottom > vh * 0.55) continue;
+          const area = r.width * r.height;
+          if (area < lmrBestArea) {
+            lmrBestArea = area;
+            lmrRect = r;
           }
         }
 
-        const vw = window.innerWidth;
-        const minY = lmrRect ? (lmrRect.bottom - 2) : 80;
-        const maxY = lmrRect ? (lmrRect.bottom + 140) : 340;
-        const maxX = vw * 0.45;
-
-        const candidates = [];
-        for (const el of queryAllAcrossDocs('img, svg, i, mat-icon, button, a, span, div')) {
-          if (!isVisible(el)) continue;
-          const r = el.getBoundingClientRect();
-          if (r.top >= minY && r.bottom <= maxY && r.left >= 10 && r.right <= maxX) {
-            if (r.width >= 14 && r.width <= 96 && r.height >= 14 && r.height <= 74) {
-              const win = el.ownerDocument?.defaultView || window;
-              const isIcon = ['IMG', 'SVG', 'I', 'MAT-ICON', 'BUTTON', 'A', 'FA-ICON'].includes(el.tagName)
-                || el.getAttribute('role') === 'button'
-                || win.getComputedStyle(el).cursor === 'pointer';
-              if (!isIcon) continue;
-              const meta = `${el.className || ''} ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
-              if (meta.includes('expand') || meta.includes('full')) continue;
-              if (r.left > vw * 0.34) continue;
-              candidates.push({ el, rect: r });
+        // Also locate "No Appendix Added" if present (strictly below the stacked-layers + bar)
+        let noAppRect = null;
+        for (const n of queryAllAcrossDocs('div, span, p, h5, h6')) {
+          if (!isVisible(n)) continue;
+          const t = (n.textContent || '').trim();
+          if (t.length < 40 && t.toLowerCase().includes('no appendix added')) {
+            const r = n.getBoundingClientRect();
+            if (r.height < 80 && r.left < vw * 0.45) {
+              noAppRect = r;
+              break;
             }
           }
+        }
+
+        const baseTop = lmrRect ? Math.min(Math.max(lmrRect.bottom, 90), vh * 0.45) : 145;
+        const minY = baseTop - 2;
+        const maxY = noAppRect ? Math.min(noAppRect.top - 4, baseTop + 150) : Math.min(baseTop + 150, vh * 0.65);
+        const maxX = vw * 0.42;
+
+        // 2. Scan DOM elements in the white rounded top bar below LMR Location (exclude right-edge expand icon)
+        const candidates = [];
+        for (const el of queryAllAcrossDocs('img, svg, i, mat-icon, button, a, fa-icon, span, div')) {
+          if (!isVisible(el)) continue;
+          const r = el.getBoundingClientRect();
+          if (r.top < minY || r.bottom > maxY || r.left < 8 || r.right > maxX) continue;
+          if (r.width < 14 || r.width > 110 || r.height < 14 || r.height > 80) continue;
+          const win = el.ownerDocument?.defaultView || window;
+          const isIcon = ['IMG', 'SVG', 'I', 'MAT-ICON', 'BUTTON', 'A', 'FA-ICON'].includes(el.tagName)
+            || el.getAttribute('role') === 'button'
+            || win.getComputedStyle(el).cursor === 'pointer';
+          if (!isIcon) continue;
+          const cls = typeof el.className === 'string' ? el.className : (el.className?.baseVal || '');
+          const meta = `${cls} ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
+          if (meta.includes('expand') || meta.includes('full') || meta.includes('close')) continue;
+          if (r.left > vw * 0.33) continue; // skip the small expand icon on the right edge of the bar
+          candidates.push({ el, rect: r });
         }
 
         const targetX = vw * 0.21;
@@ -295,46 +327,46 @@ enum SecureAutomationJS {
 
         const tried = new Set();
         for (const c of candidates.slice(0, 6)) {
-          const target = c.el.closest('button, a, [role="button"], div') || c.el;
+          const target = c.el.closest('button, a, [role="button"]') || c.el;
           if (tried.has(target)) continue;
           tried.add(target);
           await clickEl(target);
-          for (let w = 0; w < 8; w++) {
+          for (let w = 0; w < 6; w++) {
             await sleep(160);
             form = findActiveAppendixForm();
-            if (form) return form;
+            if (form) return { form, diag: 'dom-candidate' };
           }
         }
-        // Direct coordinate probe (PC-style click on the stacked-layers + bar below LMR Location)
+
+        // 3. Direct PC-style elementFromPoint coordinate probe right across the stacked-layers + icon
         const probeXs = [vw * 0.21, vw * 0.19, vw * 0.23];
-        if (lmrRect) {
-          probeXs.push(lmrRect.left + 185, lmrRect.left + 215);
-        }
-        const probeBase = lmrRect ? lmrRect.bottom : 165;
-        const probeYs = [probeBase + 38, probeBase + 52, probeBase + 26, probeBase + 66, probeBase + 80];
+        const probeYs = [baseTop + 34, baseTop + 48, baseTop + 22, baseTop + 62, baseTop + 76]
+          .filter((y) => y > 40 && y < vh - 40);
+        let lastHitTag = 'none';
         for (const doc of getAllDocs()) {
           for (const py of probeYs) {
             for (const px of probeXs) {
               let hit = null;
               try { hit = doc.elementFromPoint(px, py); } catch (_) {}
               if (!hit) continue;
-              const chain = [hit, hit.parentElement, hit.parentElement?.parentElement, hit.closest?.('button, a, [role="button"], div')].filter(Boolean);
+              lastHitTag = `${hit.tagName}@${Math.round(px)},${Math.round(py)}`;
+              const chain = [hit, hit.parentElement, hit.parentElement?.parentElement, hit.closest?.('button, a, [role="button"]')].filter(Boolean);
               for (const node of chain) {
                 if (tried.has(node)) continue;
                 const nr = node.getBoundingClientRect();
-                if (nr.width > vw * 0.46 || nr.height > 120) continue;
+                if (nr.width > vw * 0.44 || nr.height > 110 || nr.top < minY - 12) continue;
                 tried.add(node);
                 await clickEl(node);
                 for (let w = 0; w < 6; w++) {
-                  await sleep(150);
+                  await sleep(160);
                   form = findActiveAppendixForm();
-                  if (form) return form;
+                  if (form) return { form, diag: `probe-${lastHitTag}` };
                 }
               }
             }
           }
         }
-        return null;
+        return { form: null, diag: `vw=${Math.round(vw)} baseY=${Math.round(baseTop)} cand=${candidates.length} last=${lastHitTag}` };
       }
 
       function findHeadingRowByTextOrIndex(headingText, headingIndex) {
@@ -414,17 +446,18 @@ enum SecureAutomationJS {
 
       async function addHeading(headingText) {
         await dismissSwalIfAny();
-        const form = await openAddAppendixForm();
+        const opened = await openAddAppendixForm();
+        const form = opened && opened.form;
         if (!form) {
-          return { ok: false, message: 'Could not open "Add Appendix/Description". Tap the stacked-layers + icon on the left once, then press Resume.' };
+          return { ok: false, message: `Could not open "Add Appendix/Description" (${opened?.diag || ''}). Tap the stacked-layers + icon once, then press Resume.` };
         }
 
         const checkboxes = Array.from(form.querySelectorAll('input[type="checkbox"]'))
-          .filter(isVisible)
-          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+          .filter((cb) => !!getCheckboxTarget(cb))
+          .sort((a, b) => getCheckboxTarget(a).getBoundingClientRect().top - getCheckboxTarget(b).getBoundingClientRect().top);
 
         if (checkboxes.length >= 1 && !checkboxes[0].checked) {
-          await clickEl(checkboxes[0]);
+          await clickEl(getCheckboxTarget(checkboxes[0]));
           await sleep(300);
         }
 
@@ -524,7 +557,7 @@ enum SecureAutomationJS {
 
         const chk = matchedRow.querySelector('input[type="checkbox"]');
         if (chk && !chk.checked) {
-          await clickEl(chk);
+          await clickEl(getCheckboxTarget(chk) || chk);
           await sleep(220);
         }
 
@@ -607,22 +640,23 @@ enum SecureAutomationJS {
 
       async function addLumpSum(keyword, customDesc, amount) {
         await dismissSwalIfAny();
-        const form = await openAddAppendixForm();
+        const opened = await openAddAppendixForm();
+        const form = opened && opened.form;
         if (!form) {
-          return { ok: false, message: 'Could not open Add Appendix/Description for Lump Sum.' };
+          return { ok: false, message: `Could not open Add Appendix/Description for Lump Sum (${opened?.diag || ''}).` };
         }
 
         const checkboxes = Array.from(form.querySelectorAll('input[type="checkbox"]'))
-          .filter(isVisible)
-          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+          .filter((cb) => !!getCheckboxTarget(cb))
+          .sort((a, b) => getCheckboxTarget(a).getBoundingClientRect().top - getCheckboxTarget(b).getBoundingClientRect().top);
 
         let lumpChk = checkboxes.find((cb) => {
-          const labelTxt = (cb.closest('label')?.innerText || cb.parentElement?.innerText || '').toLowerCase();
+          const labelTxt = (cb.closest('label, mat-checkbox, .form-check')?.innerText || cb.parentElement?.innerText || '').toLowerCase();
           return labelTxt.includes('lump') && !labelTxt.includes('heading');
         }) || (checkboxes.length >= 2 ? checkboxes[checkboxes.length - 1] : checkboxes[0]);
 
         if (lumpChk && !lumpChk.checked) {
-          await clickEl(lumpChk);
+          await clickEl(getCheckboxTarget(lumpChk));
           await sleep(450);
         }
 
@@ -746,7 +780,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V7__ = true;
+      window.__SECURE_AI_IPAD_V8__ = true;
     })();
     """#
 }

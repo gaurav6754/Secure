@@ -186,10 +186,13 @@ struct MainWorkspaceView: View {
                 case .pdf:
                     PDFImportView(
                         onStartRequested: {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
                                 showSidebar = false
                             }
-                            automation.startAutomation(browser: browser)
+                            Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 420_000_000)
+                                automation.startAutomation(browser: browser)
+                            }
                         },
                         onSendScannedPDFToAI: { att in
                             pendingAIPDFAttachment = att

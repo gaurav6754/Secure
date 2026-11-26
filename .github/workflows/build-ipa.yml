@@ -35,6 +35,12 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build
 
+      - name: Verify Native iPadOS Info.plist Keys
+        run: |
+          plutil -p build/Build/Products/Release-iphoneos/SECURE_AI_iPad.app/Info.plist
+          plutil -p build/Build/Products/Release-iphoneos/SECURE_AI_iPad.app/Info.plist | grep -q "UILaunchScreen"
+          plutil -p build/Build/Products/Release-iphoneos/SECURE_AI_iPad.app/Info.plist | grep -q "CADisableMinimumFrameDurationOnPhone"
+
       - name: Package .ipa
         run: |
           mkdir -p Payload
