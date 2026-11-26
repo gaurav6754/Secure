@@ -6,6 +6,7 @@ struct SECURE_AI_iPadApp: App {
     @StateObject private var automation = AutomationController()
     @StateObject private var licenseService = LicenseService()
     @StateObject private var themeManager = ThemeManager()
+    @StateObject private var savedLogins = SavedLoginStore()
 
     var body: some Scene {
         WindowGroup {
@@ -14,6 +15,7 @@ struct SECURE_AI_iPadApp: App {
                 .environmentObject(automation)
                 .environmentObject(licenseService)
                 .environmentObject(themeManager)
+                .environmentObject(savedLogins)
                 .preferredColorScheme(themeManager.palette.isLight ? .light : .dark)
         }
     }

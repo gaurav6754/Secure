@@ -12,6 +12,8 @@ struct AppThemePalette: Identifiable, Hashable {
     let fgHex: UInt32
     let mutedHex: UInt32
     let accentHex: UInt32
+    let orb1Hex: UInt32
+    let orb2Hex: UInt32
 
     var bg: Color { Color(hex: bgHex) }
     var side: Color { Color(hex: sideHex) }
@@ -21,26 +23,42 @@ struct AppThemePalette: Identifiable, Hashable {
     var fg: Color { Color(hex: fgHex) }
     var muted: Color { Color(hex: mutedHex) }
     var accent: Color { Color(hex: accentHex) }
+    var orb1: Color { Color(hex: orb1Hex) }
+    var orb2: Color { Color(hex: orb2Hex) }
 
-    // Ported directly from PC ui_theme.py signature themes
+    // Ported directly from PC ui_theme.py signature Glass & Wallpaper themes
     static let all: [AppThemePalette] = [
-        .init(id: "aurora", name: "Aurora Glass", isLight: false, bgHex: 0x0B0D1F, sideHex: 0x10132A, cardHex: 0x171B36, panelHex: 0x202546, lineHex: 0x2E355E, fgHex: 0xECEEF7, mutedHex: 0x8F97B8, accentHex: 0x8B7BFF),
-        .init(id: "midnight", name: "Midnight", isLight: false, bgHex: 0x0E1018, sideHex: 0x12141F, cardHex: 0x1A1D2B, panelHex: 0x232739, lineHex: 0x2B3047, fgHex: 0xECEEF7, mutedHex: 0x8B91A8, accentHex: 0x8B7BFF),
-        .init(id: "ocean", name: "Ocean Glass", isLight: false, bgHex: 0x06121F, sideHex: 0x091A2C, cardHex: 0x10253C, panelHex: 0x17324F, lineHex: 0x22466B, fgHex: 0xEAF6FF, mutedHex: 0x7EA4C4, accentHex: 0x22D3EE),
-        .init(id: "emerald", name: "Emerald Glass", isLight: false, bgHex: 0x06140F, sideHex: 0x0A1D16, cardHex: 0x112B21, panelHex: 0x193B2E, lineHex: 0x265241, fgHex: 0xE8FBF3, mutedHex: 0x7EB39E, accentHex: 0x34D399),
-        .init(id: "sunset", name: "Sunset Glass", isLight: false, bgHex: 0x1A0B14, sideHex: 0x24101C, cardHex: 0x311727, panelHex: 0x402033, lineHex: 0x572D46, fgHex: 0xFDF0F5, mutedHex: 0xC18EA8, accentHex: 0xFB923C),
-        .init(id: "nebula", name: "Nebula Glass", isLight: false, bgHex: 0x0A0714, sideHex: 0x120C22, cardHex: 0x1C1433, panelHex: 0x271D46, lineHex: 0x3A2C63, fgHex: 0xF3EEFF, mutedHex: 0xA292C9, accentHex: 0xC084FC),
-        .init(id: "royal", name: "Royal Gold", isLight: false, bgHex: 0x0F0D1A, sideHex: 0x171426, cardHex: 0x221E36, panelHex: 0x2E2947, lineHex: 0x423B61, fgHex: 0xFAF6E8, mutedHex: 0xB3A88E, accentHex: 0xF5C542),
-        .init(id: "oled", name: "OLED Black", isLight: false, bgHex: 0x000000, sideHex: 0x08080D, cardHex: 0x12121A, panelHex: 0x1C1C27, lineHex: 0x2A2A38, fgHex: 0xF4F4FA, mutedHex: 0x8A8A9E, accentHex: 0xA78BFA),
-        .init(id: "dracula", name: "Dracula", isLight: false, bgHex: 0x282A36, sideHex: 0x21222C, cardHex: 0x303341, panelHex: 0x3A3E50, lineHex: 0x4B5066, fgHex: 0xF8F8F2, mutedHex: 0x9FA8C7, accentHex: 0xBD93F9),
-        .init(id: "cloud", name: "Cloud Light", isLight: true, bgHex: 0xEEF1F8, sideHex: 0xF7F8FC, cardHex: 0xFFFFFF, panelHex: 0xE4E8F3, lineHex: 0xCFD6E8, fgHex: 0x1B1F2E, mutedHex: 0x5E6680, accentHex: 0x6D5DFC)
+        .init(id: "aurora", name: "Aurora Glass", isLight: false, bgHex: 0x090B1A, sideHex: 0x0E1126, cardHex: 0x161B38, panelHex: 0x1F264C, lineHex: 0x333D70, fgHex: 0xF0F2FA, mutedHex: 0x95A0C6, accentHex: 0x8B7BFF, orb1Hex: 0x6D28D9, orb2Hex: 0x0EA5E9),
+        .init(id: "ocean", name: "Ocean Glass", isLight: false, bgHex: 0x05101D, sideHex: 0x08182A, cardHex: 0x0F243C, panelHex: 0x163354, lineHex: 0x254D78, fgHex: 0xEAF6FF, mutedHex: 0x82AACB, accentHex: 0x22D3EE, orb1Hex: 0x0284C7, orb2Hex: 0x06B6D4),
+        .init(id: "emerald", name: "Emerald Glass", isLight: false, bgHex: 0x05130E, sideHex: 0x091C15, cardHex: 0x102A20, panelHex: 0x183C2F, lineHex: 0x285A47, fgHex: 0xE8FBF3, mutedHex: 0x82B8A3, accentHex: 0x34D399, orb1Hex: 0x059669, orb2Hex: 0x10B981),
+        .init(id: "sunset", name: "Sunset Glass", isLight: false, bgHex: 0x180912, sideHex: 0x220E1A, cardHex: 0x301626, panelHex: 0x422035, lineHex: 0x5D2F4B, fgHex: 0xFDF0F5, mutedHex: 0xC692AD, accentHex: 0xFB923C, orb1Hex: 0xDB2777, orb2Hex: 0xF97316),
+        .init(id: "nebula", name: "Nebula Glass", isLight: false, bgHex: 0x090614, sideHex: 0x120B22, cardHex: 0x1C1334, panelHex: 0x281D48, lineHex: 0x3E2E6B, fgHex: 0xF3EEFF, mutedHex: 0xA696CE, accentHex: 0xC084FC, orb1Hex: 0x9333EA, orb2Hex: 0xEC4899),
+        .init(id: "royal", name: "Royal Gold", isLight: false, bgHex: 0x0E0C18, sideHex: 0x161325, cardHex: 0x211D36, panelHex: 0x2E2949, lineHex: 0x463E68, fgHex: 0xFAF6E8, mutedHex: 0xB8AC92, accentHex: 0xF5C542, orb1Hex: 0xD97706, orb2Hex: 0x7C3AED),
+        .init(id: "midnight", name: "Midnight", isLight: false, bgHex: 0x0E1018, sideHex: 0x12141F, cardHex: 0x1A1D2B, panelHex: 0x232739, lineHex: 0x2F354F, fgHex: 0xECEEF7, mutedHex: 0x8B91A8, accentHex: 0x8B7BFF, orb1Hex: 0x4F46E5, orb2Hex: 0x2563EB),
+        .init(id: "oled", name: "OLED Black", isLight: false, bgHex: 0x000000, sideHex: 0x07070C, cardHex: 0x12121A, panelHex: 0x1D1D29, lineHex: 0x2E2E40, fgHex: 0xF4F4FA, mutedHex: 0x8D8DA3, accentHex: 0xA78BFA, orb1Hex: 0x5B21B6, orb2Hex: 0x1E1B4B),
+        .init(id: "dracula", name: "Dracula", isLight: false, bgHex: 0x242632, sideHex: 0x1E2029, cardHex: 0x2D3040, panelHex: 0x383C50, lineHex: 0x4C526B, fgHex: 0xF8F8F2, mutedHex: 0xA2ABC9, accentHex: 0xBD93F9, orb1Hex: 0x7C3AED, orb2Hex: 0xEC4899),
+        .init(id: "cloud", name: "Cloud Glass", isLight: true, bgHex: 0xE9EEF9, sideHex: 0xF5F7FC, cardHex: 0xFFFFFF, panelHex: 0xE2E7F5, lineHex: 0xCBD3E8, fgHex: 0x181C2B, mutedHex: 0x5A637D, accentHex: 0x6D5DFC, orb1Hex: 0x818CF8, orb2Hex: 0x38BDF8)
     ]
+}
+
+enum WallpaperStyle: String, CaseIterable, Identifiable {
+    case auroraOrbs = "Aurora Glow"
+    case meshWave = "Mesh Gradient"
+    case solidMinimal = "Minimal Solid"
+
+    var id: String { rawValue }
 }
 
 @MainActor
 final class ThemeManager: ObservableObject {
     @Published var currentId: String {
         didSet { UserDefaults.standard.set(currentId, forKey: "secure_ai_theme_id") }
+    }
+    @Published var frostedGlass: Bool {
+        didSet { UserDefaults.standard.set(frostedGlass, forKey: "secure_ai_frosted_glass") }
+    }
+    @Published var wallpaper: WallpaperStyle {
+        didSet { UserDefaults.standard.set(wallpaper.rawValue, forKey: "secure_ai_wallpaper") }
     }
 
     var palette: AppThemePalette {
@@ -49,6 +67,53 @@ final class ThemeManager: ObservableObject {
 
     init() {
         self.currentId = UserDefaults.standard.string(forKey: "secure_ai_theme_id") ?? "aurora"
+        if UserDefaults.standard.object(forKey: "secure_ai_frosted_glass") == nil {
+            self.frostedGlass = true
+        } else {
+            self.frostedGlass = UserDefaults.standard.bool(forKey: "secure_ai_frosted_glass")
+        }
+        let wpRaw = UserDefaults.standard.string(forKey: "secure_ai_wallpaper") ?? WallpaperStyle.auroraOrbs.rawValue
+        self.wallpaper = WallpaperStyle(rawValue: wpRaw) ?? .auroraOrbs
+    }
+}
+
+/// GPU-accelerated Frosted Glass Wallpaper backdrop for the SECURE AI sidebar
+struct FrostedWallpaperBackdrop: View {
+    let palette: AppThemePalette
+    let style: WallpaperStyle
+    let frosted: Bool
+
+    var body: some View {
+        ZStack {
+            palette.side
+            if style == .auroraOrbs {
+                GeometryReader { geo in
+                    Circle()
+                        .fill(palette.orb1.opacity(palette.isLight ? 0.25 : 0.36))
+                        .frame(width: geo.size.width * 1.1, height: geo.size.width * 1.1)
+                        .blur(radius: 75)
+                        .offset(x: -geo.size.width * 0.3, y: -60)
+
+                    Circle()
+                        .fill(palette.orb2.opacity(palette.isLight ? 0.22 : 0.30))
+                        .frame(width: geo.size.width * 0.95, height: geo.size.width * 0.95)
+                        .blur(radius: 70)
+                        .offset(x: geo.size.width * 0.28, y: geo.size.height * 0.55)
+                }
+            } else if style == .meshWave {
+                LinearGradient(
+                    colors: [palette.orb1.opacity(0.28), palette.side, palette.orb2.opacity(0.24)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+            if frosted {
+                Rectangle()
+                    .fill(palette.isLight ? .ultraThinMaterial : .ultraThinMaterial)
+                    .opacity(palette.isLight ? 0.55 : 0.42)
+            }
+        }
+        .ignoresSafeArea()
     }
 }
 

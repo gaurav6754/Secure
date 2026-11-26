@@ -23,36 +23,62 @@ struct MainWorkspaceView: View {
     @EnvironmentObject var automation: AutomationController
     @EnvironmentObject var license: LicenseService
     @EnvironmentObject var theme: ThemeManager
+    @EnvironmentObject var savedLogins: SavedLoginStore
 
     @State private var selectedTab: SidebarTab = .pdf
     @State private var showSidebar: Bool = true
     @State private var pendingAIPDFAttachment: AIAttachment? = nil
+    @State private var showAddLoginSheet: Bool = false
     @AppStorage("secure_ai_gemini_key") private var geminiApiKey: String = ""
 
     private var pal: AppThemePalette { theme.palette }
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            HStack(spacing: 0) {
-                if showSidebar {
-                    sidebarPanel
-                        .frame(width: 345)
-                        .background(pal.side)
-                        .overlay(Rectangle().frame(width: 1).foregroundColor(pal.line), alignment: .trailing)
-                }
+        GeometryReader { geo in
+            let sidebarWidth = min(max(geo.size.width * 0.33, 310), 430)
 
-                VStack(spacing: 0) {
-                    BrowserToolbarView(showSidebar: $showSidebar)
-                    WebViewRepresentable(store: browser)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ZStack(alignment: .topTrailing) {
+                HStack(spacing: 0) {
+                    if showSidebar {
+                        sidebarPanel
+                            .frame(width: sidebarWidth)
+                            .background(
+                                FrostedWallpaperBackdrop(
+                                    palette: pal,
+                                    style: theme.wallpaper,
+                                    frosted: theme.frostedGlass
+                                )
+                            )
+                            .overlay(Rectangle().frame(width: 1).foregroundColor(pal.line.opacity(0.6)), alignment: .trailing)
+                            .transition(.move(edge: .leading))
+                    }
+
+                    VStack(spacing: 0) {
+                        BrowserToolbarView(
+                            showSidebar: $showSidebar,
+                            showAddLoginSheet: $showAddLoginSheet
+                        )
+                        WebViewRepresentable(store: browser)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .background(pal.bg)
+
+                if automation.isRunning {
+                    floatingAutomationHUD
+                        .padding(.top, 92)
+                        .padding(.trailing, 18)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 }
             }
-            .background(pal.bg)
-
-            if automation.isRunning {
-                floatingAutomationHUD
-                    .padding(.top, 92)
-                    .padding(.trailing, 18)
+        }
+        // Automatically bring back the 1/3 app window when automation completes or is stopped!
+        .onChange(of: automation.isRunning) { running in
+            if !running {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                    showSidebar = true
+                }
             }
         }
         .onChange(of: license.cloudGeminiKey) { newKey in
@@ -60,28 +86,39 @@ struct MainWorkspaceView: View {
                 geminiApiKey = newKey
             }
         }
+        .sheet(isPresented: $showAddLoginSheet) {
+            AddLoginIDSheet()
+                .environmentObject(savedLogins)
+                .environmentObject(theme)
+        }
         .task {
             await license.verifyOnLaunch()
         }
     }
 
-    // MARK: - Left Control Panel
+    // MARK: - Left 1/3 Frosted Glass SECURE AI Panel
     private var sidebarPanel: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "bolt.shield.fill")
-                    .font(.system(size: 20, weight: .bold))
-                    .foregroundColor(pal.accent)
-                VStack(alignment: .leading, spacing: 1) {
+            // Sleek Brand Header
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(pal.accent.opacity(0.22))
+                        .frame(width: 34, height: 34)
+                    Image(systemName: "bolt.shield.fill")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(pal.accent)
+                }
+                VStack(alignment: .leading, spacing: 2) {
                     Text("SECURE AI")
-                        .font(.system(size: 15, weight: .bold))
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
                         .foregroundColor(pal.fg)
                     HStack(spacing: 5) {
                         Circle()
                             .fill(license.isActivated ? SecureTheme.green : SecureTheme.amber)
                             .frame(width: 6, height: 6)
                         Text(license.isActivated ? "Cloud Active • v3.0.10" : "License Not Active")
-                            .font(.system(size: 10.5))
+                            .font(.system(size: 10.5, weight: .medium))
                             .foregroundColor(license.isActivated ? SecureTheme.green : SecureTheme.amber)
                     }
                 }
@@ -102,22 +139,23 @@ struct MainWorkspaceView: View {
                         Image(systemName: "gauge.with.needle.fill")
                         Text(automation.speed.rawValue)
                     }
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(pal.panel)
+                    .font(.system(size: 11.5, weight: .bold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(pal.card.opacity(0.75))
                     .foregroundColor(pal.accent)
-                    .cornerRadius(8)
+                    .cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(pal.line.opacity(0.7), lineWidth: 1))
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(pal.bg)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
 
-            HStack(spacing: 5) {
+            // Smooth Pill Tab Switcher
+            HStack(spacing: 6) {
                 ForEach(SidebarTab.allCases) { tab in
                     Button {
-                        selectedTab = tab
+                        withAnimation(.easeInOut(duration: 0.16)) { selectedTab = tab }
                     } label: {
                         VStack(spacing: 3) {
                             Image(systemName: tab.icon)
@@ -127,29 +165,30 @@ struct MainWorkspaceView: View {
                                 .lineLimit(1)
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 7)
-                        .background(selectedTab == tab ? pal.accent.opacity(0.22) : pal.card)
+                        .padding(.vertical, 8)
+                        .background(selectedTab == tab ? pal.accent.opacity(0.24) : pal.card.opacity(0.55))
                         .foregroundColor(selectedTab == tab ? pal.accent : pal.muted)
-                        .cornerRadius(8)
+                        .cornerRadius(10)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(selectedTab == tab ? pal.accent : pal.line, lineWidth: 1)
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(selectedTab == tab ? pal.accent : pal.line.opacity(0.5), lineWidth: 1)
                         )
                     }
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(pal.side)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
 
-            Divider().background(pal.line)
+            Divider().background(pal.line.opacity(0.5))
 
             Group {
                 switch selectedTab {
                 case .pdf:
                     PDFImportView(
                         onStartRequested: {
-                            withAnimation(.easeInOut(duration: 0.2)) { showSidebar = false }
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
+                                showSidebar = false
+                            }
                             automation.startAutomation(browser: browser)
                         },
                         onSendScannedPDFToAI: { att in
@@ -171,14 +210,14 @@ struct MainWorkspaceView: View {
                 case .verify:
                     VerifyFixView()
                 case .settings:
-                    SettingsLicenseView(geminiApiKey: $geminiApiKey)
+                    SettingsLicenseView(geminiApiKey: $geminiApiKey, showAddLoginSheet: $showAddLoginSheet)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    // MARK: - Floating Compact Top-Right Automation HUD
+    // MARK: - Floating Compact Top-Right Automation HUD (Visible While App Window Is Hidden)
     private var floatingAutomationHUD: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
@@ -186,16 +225,16 @@ struct MainWorkspaceView: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(pal.accent)
                 Text(automation.currentStepLabel)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(pal.fg)
                     .lineLimit(1)
-                    .frame(maxWidth: 240, alignment: .leading)
+                    .frame(maxWidth: 250, alignment: .leading)
                 if let err = automation.lastErrorBanner {
                     Text(err)
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 10.5, weight: .medium))
                         .foregroundColor(SecureTheme.amber)
                         .lineLimit(2)
-                        .frame(maxWidth: 240, alignment: .leading)
+                        .frame(maxWidth: 250, alignment: .leading)
                 }
             }
 
@@ -204,10 +243,10 @@ struct MainWorkspaceView: View {
             } label: {
                 Image(systemName: automation.isPaused ? "play.fill" : "pause.fill")
                     .font(.system(size: 13, weight: .bold))
-                    .padding(8)
+                    .padding(9)
                     .background(SecureTheme.amber)
                     .foregroundColor(.black)
-                    .cornerRadius(8)
+                    .cornerRadius(9)
             }
 
             Button {
@@ -215,29 +254,33 @@ struct MainWorkspaceView: View {
             } label: {
                 Image(systemName: "stop.fill")
                     .font(.system(size: 13, weight: .bold))
-                    .padding(8)
+                    .padding(9)
                     .background(SecureTheme.red)
                     .foregroundColor(.white)
-                    .cornerRadius(8)
+                    .cornerRadius(9)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(pal.bg.opacity(0.96))
-        .cornerRadius(12)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(pal.accent, lineWidth: 1.5))
-        .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 4)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+        .background(pal.bg.opacity(0.85))
+        .cornerRadius(14)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(pal.accent.opacity(0.85), lineWidth: 1.5))
+        .shadow(color: .black.opacity(0.42), radius: 14, x: 0, y: 5)
     }
 }
 
-/// Isolated toolbar view so WKWebView progress updates only re-render this thin top strip (zero lag).
+/// Isolated 120Hz Browser Toolbar with Saved SECURE Logins menu & Chrome-style Zoom Controls
 private struct BrowserToolbarView: View {
     @EnvironmentObject var browser: EmbeddedBrowserStore
     @EnvironmentObject var automation: AutomationController
     @EnvironmentObject var theme: ThemeManager
+    @EnvironmentObject var savedLogins: SavedLoginStore
 
     @Binding var showSidebar: Bool
+    @Binding var showAddLoginSheet: Bool
     @State private var addressDraft: String = "https://secure.dord.gov.in/"
+    @State private var loginStatusToast: String? = nil
 
     private var pal: AppThemePalette { theme.palette }
 
@@ -245,10 +288,10 @@ private struct BrowserToolbarView: View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.18)) { showSidebar.toggle() }
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) { showSidebar.toggle() }
                 } label: {
                     Image(systemName: showSidebar ? "sidebar.left" : "sidebar.squares.left")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 14.5, weight: .semibold))
                         .foregroundColor(pal.accent)
                         .padding(7)
                         .background(pal.card)
@@ -258,21 +301,21 @@ private struct BrowserToolbarView: View {
                 Button { browser.goBack() } label: {
                     Image(systemName: "chevron.left")
                         .foregroundColor(browser.canGoBack ? pal.fg : pal.muted.opacity(0.4))
-                        .padding(6)
+                        .padding(5)
                 }
                 .disabled(!browser.canGoBack)
 
                 Button { browser.goForward() } label: {
                     Image(systemName: "chevron.right")
                         .foregroundColor(browser.canGoForward ? pal.fg : pal.muted.opacity(0.4))
-                        .padding(6)
+                        .padding(5)
                 }
                 .disabled(!browser.canGoForward)
 
                 Button { browser.reloadOrStop() } label: {
                     Image(systemName: browser.isLoading ? "xmark" : "arrow.clockwise")
                         .foregroundColor(pal.fg)
-                        .padding(6)
+                        .padding(5)
                 }
 
                 HStack(spacing: 5) {
@@ -286,9 +329,7 @@ private struct BrowserToolbarView: View {
                         .foregroundColor(pal.fg)
                         .font(.system(size: 12.5))
                         .submitLabel(.go)
-                        .onSubmit {
-                            browser.navigate(input: addressDraft)
-                        }
+                        .onSubmit { browser.navigate(input: addressDraft) }
                     if !addressDraft.isEmpty {
                         Button { addressDraft = "" } label: {
                             Image(systemName: "xmark.circle.fill")
@@ -313,24 +354,62 @@ private struct BrowserToolbarView: View {
                 .foregroundColor(.white)
                 .cornerRadius(8)
 
-                // Smooth CSS Zoom Controls
+                // Saved SECURE Logins One-Tap Auto-Fill Menu
+                Menu {
+                    if savedLogins.accounts.isEmpty {
+                        Text("No saved SECURE logins yet")
+                    } else {
+                        ForEach(savedLogins.accounts) { acc in
+                            Button {
+                                Task {
+                                    let msg = await browser.autoFillLogin(userId: acc.userId, password: acc.password)
+                                    loginStatusToast = msg
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                        if loginStatusToast == msg { loginStatusToast = nil }
+                                    }
+                                }
+                            } label: {
+                                Label("\(acc.label) (\(acc.userId))", systemImage: "person.badge.key.fill")
+                            }
+                        }
+                    }
+                    Divider()
+                    Button {
+                        showAddLoginSheet = true
+                    } label: {
+                        Label("Add New SECURE Login ID...", systemImage: "plus.circle.fill")
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "key.fill")
+                        Text("Logins")
+                    }
+                    .font(.system(size: 11.5, weight: .bold))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(pal.accent.opacity(0.22))
+                    .foregroundColor(pal.accent)
+                    .cornerRadius(8)
+                }
+
+                // Chrome-Exact Live Zoom Controls (- 67% +)
                 HStack(spacing: 2) {
                     Button { browser.zoomOut() } label: {
                         Image(systemName: "minus")
                             .font(.system(size: 11, weight: .bold))
-                            .padding(.horizontal, 7)
+                            .padding(.horizontal, 6)
                             .padding(.vertical, 6)
                     }
                     Button { browser.resetZoom() } label: {
                         Text("\(Int(round(browser.zoomLevel * 100)))%")
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .padding(.horizontal, 4)
+                            .padding(.horizontal, 3)
                             .padding(.vertical, 6)
                     }
                     Button { browser.zoomIn() } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 11, weight: .bold))
-                            .padding(.horizontal, 7)
+                            .padding(.horizontal, 6)
                             .padding(.vertical, 6)
                     }
                 }
@@ -338,21 +417,6 @@ private struct BrowserToolbarView: View {
                 .background(pal.card)
                 .cornerRadius(8)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(pal.line, lineWidth: 1))
-
-                Button {
-                    browser.desktopMode.toggle()
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: browser.desktopMode ? "desktopcomputer" : "ipad")
-                        Text(browser.desktopMode ? "PC" : "iPad")
-                    }
-                    .font(.system(size: 11, weight: .semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(browser.desktopMode ? SecureTheme.green.opacity(0.18) : pal.card)
-                    .foregroundColor(browser.desktopMode ? SecureTheme.green : pal.muted)
-                    .cornerRadius(8)
-                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
@@ -375,7 +439,11 @@ private struct BrowserToolbarView: View {
                     }
                 }
                 Spacer()
-                if let est = automation.activeEstimate {
+                if let toast = loginStatusToast {
+                    Text(toast)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(pal.accent)
+                } else if let est = automation.activeEstimate {
                     Text("Loaded: \(est.headings.count) H • \(est.totalItemCount) Items • \(est.lumpSums.count) LS")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(SecureTheme.green)
@@ -399,6 +467,46 @@ private struct BrowserToolbarView: View {
         }
         .onChange(of: browser.addressText) { newVal in
             addressDraft = newVal
+        }
+    }
+}
+
+/// Modal sheet to add a new saved SECURE Login ID (stored in iPadOS Keychain so it survives reinstalls)
+struct AddLoginIDSheet: View {
+    @EnvironmentObject var savedLogins: SavedLoginStore
+    @EnvironmentObject var theme: ThemeManager
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var label: String = ""
+    @State private var userId: String = ""
+    @State private var password: String = ""
+
+    private var pal: AppThemePalette { theme.palette }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Account Details (Saved Securely in Keychain)") {
+                    TextField("Label (e.g. Kawadpur JE / Surajgarha)", text: $label)
+                    TextField("SECURE User ID (e.g. BH101710)", text: $userId)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                    SecureField("Password", text: $password)
+                }
+                Section {
+                    Button("Save Login ID") {
+                        savedLogins.add(label: label, userId: userId, password: password)
+                        dismiss()
+                    }
+                    .disabled(userId.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty)
+                }
+            }
+            .navigationTitle("Add SECURE Login ID")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
         }
     }
 }

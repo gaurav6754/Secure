@@ -3,26 +3,44 @@ import UIKit
 
 @MainActor
 final class LicenseService: ObservableObject {
-    // Matches 2_SECURE_AI_Customer_App/MONGODB_URI.txt & license_client.py
     static let defaultCloudMongoURI = "mongodb+srv://mgnrega:gaurav2323@cluster0.8albao0.mongodb.net/?appName=Cluster0"
     static let licenseDBName = "lazyman_license_db"
 
+    // Keychain keys (survive app reinstalls!)
+    private static let kcLicenseKey = "kc_secure_ai_license_key"
+    private static let kcCloudURI = "kc_secure_ai_cloud_uri"
+    private static let kcActivated = "kc_secure_ai_activated"
+    private static let kcDeviceID = "kc_secure_ai_stable_device_id"
+    private static let kcCustomer = "kc_secure_ai_customer"
+    private static let kcPlan = "kc_secure_ai_plan"
+    private static let kcGeminiKey = "kc_secure_ai_cloud_gemini"
+    private static let kcAnthropicKey = "kc_secure_ai_cloud_anthropic"
+    private static let kcAIProvider = "kc_secure_ai_cloud_provider"
+
     @Published var licenseKey: String {
-        didSet { UserDefaults.standard.set(licenseKey, forKey: "secure_ai_license_key") }
+        didSet { KeychainHelper.save(licenseKey, forKey: Self.kcLicenseKey) }
     }
     @Published var serverURL: String {
-        didSet { UserDefaults.standard.set(serverURL, forKey: "secure_ai_cloud_uri_v2") }
+        didSet { KeychainHelper.save(serverURL, forKey: Self.kcCloudURI) }
     }
     @Published var isActivated: Bool {
-        didSet { UserDefaults.standard.set(isActivated, forKey: "secure_ai_activated_cloud_v2") }
+        didSet { KeychainHelper.save(isActivated ? "1" : "0", forKey: Self.kcActivated) }
     }
     @Published var customerName: String {
-        didSet { UserDefaults.standard.set(customerName, forKey: "secure_ai_customer_name") }
+        didSet { KeychainHelper.save(customerName, forKey: Self.kcCustomer) }
     }
     @Published var planName: String {
-        didSet { UserDefaults.standard.set(planName, forKey: "secure_ai_plan_name") }
+        didSet { KeychainHelper.save(planName, forKey: Self.kcPlan) }
     }
-    @Published var cloudGeminiKey: String = ""
+    @Published var cloudGeminiKey: String {
+        didSet { KeychainHelper.save(cloudGeminiKey, forKey: Self.kcGeminiKey) }
+    }
+    @Published var cloudAnthropicKey: String {
+        didSet { KeychainHelper.save(cloudAnthropicKey, forKey: Self.kcAnthropicKey) }
+    }
+    @Published var cloudAIProvider: String {
+        didSet { KeychainHelper.save(cloudAIProvider, forKey: Self.kcAIProvider) }
+    }
     @Published var statusMessage: String = "Enter your license key to activate with Cloud Database."
     @Published var isChecking: Bool = false
 
@@ -31,15 +49,36 @@ final class LicenseService: ObservableObject {
     let osInfo: String
 
     init() {
-        self.licenseKey = UserDefaults.standard.string(forKey: "secure_ai_license_key") ?? ""
-        let savedURI = UserDefaults.standard.string(forKey: "secure_ai_cloud_uri_v2") ?? ""
+        // Stable device ID stored in Keychain so reinstalling the IPA never counts as a new device
+        if let savedDevId = KeychainHelper.loadString(forKey: Self.kcDeviceID), !savedDevId.isEmpty {
+            self.deviceId = savedDevId
+        } else {
+            let newId = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
+            KeychainHelper.save(newId, forKey: Self.kcDeviceID)
+            self.deviceId = newId
+        }
+
+        let kcKey = KeychainHelper.loadString(forKey: Self.kcLicenseKey)
+        self.licenseKey = kcKey ?? UserDefaults.standard.string(forKey: "secure_ai_license_key") ?? ""
+
+        let kcURI = KeychainHelper.loadString(forKey: Self.kcCloudURI)
+        let savedURI = kcURI ?? UserDefaults.standard.string(forKey: "secure_ai_cloud_uri_v2") ?? ""
         self.serverURL = savedURI.isEmpty ? Self.defaultCloudMongoURI : savedURI
-        self.isActivated = UserDefaults.standard.bool(forKey: "secure_ai_activated_cloud_v2")
-        self.customerName = UserDefaults.standard.string(forKey: "secure_ai_customer_name") ?? ""
-        self.planName = UserDefaults.standard.string(forKey: "secure_ai_plan_name") ?? ""
-        self.deviceId = UIDevice.current.identifierForVendor?.uuidString ?? "IPAD-PRO-UNKNOWN"
+
+        let kcAct = KeychainHelper.loadString(forKey: Self.kcActivated)
+        self.isActivated = (kcAct == "1") || UserDefaults.standard.bool(forKey: "secure_ai_activated_cloud_v2")
+
+        self.customerName = KeychainHelper.loadString(forKey: Self.kcCustomer) ?? ""
+        self.planName = KeychainHelper.loadString(forKey: Self.kcPlan) ?? ""
+        self.cloudGeminiKey = KeychainHelper.loadString(forKey: Self.kcGeminiKey) ?? ""
+        self.cloudAnthropicKey = KeychainHelper.loadString(forKey: Self.kcAnthropicKey) ?? ""
+        self.cloudAIProvider = KeychainHelper.loadString(forKey: Self.kcAIProvider) ?? "gemini"
         self.deviceName = UIDevice.current.name
         self.osInfo = "iPadOS \(UIDevice.current.systemVersion)"
+
+        if isActivated && !licenseKey.isEmpty {
+            self.statusMessage = "Restored active Cloud license (\(planName.isEmpty ? "Active" : planName))."
+        }
     }
 
     func activateLicense() async {
@@ -65,16 +104,15 @@ final class LicenseService: ObservableObject {
         }
     }
 
-    /// Re-verifies an already activated license against the Cloud Database on launch.
+    /// Re-verifies license & syncs Gemini + Anthropic API keys from Laptop License Manager on launch.
     func verifyOnLaunch() async {
-        guard isActivated, !licenseKey.isEmpty else { return }
+        guard !licenseKey.isEmpty else { return }
         let target = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let effectiveTarget = target.isEmpty ? Self.defaultCloudMongoURI : target
         guard effectiveTarget.hasPrefix("mongodb+srv://") || effectiveTarget.hasPrefix("mongodb://") else { return }
         await activateViaMongoDB(uri: effectiveTarget, key: licenseKey.uppercased(), isVerifyOnly: true)
     }
 
-    // MARK: - Direct MongoDB Atlas Sync (100% Parity with PC Customer App & Laptop License Manager)
     private func activateViaMongoDB(uri: String, key: String, isVerifyOnly: Bool = false) async {
         do {
             let client = try MongoWireClient(uri: uri)
@@ -83,7 +121,6 @@ final class LicenseService: ObservableObject {
             let now = try await client.connectAndAuthenticate()
             let db = Self.licenseDBName
 
-            // 1. Find license in `licenses` collection
             let licFind = try await client.runCommand(database: db, command: MongoWireClient.BSONDoc([
                 ("find", .string("licenses")),
                 ("filter", .document([
@@ -126,7 +163,6 @@ final class LicenseService: ObservableObject {
                 return
             }
 
-            // 2. Check existing devices for this key
             let devFind = try await client.runCommand(database: db, command: MongoWireClient.BSONDoc([
                 ("find", .string("devices")),
                 ("filter", .document([("license_key", .string(key))]))
@@ -141,12 +177,8 @@ final class LicenseService: ObservableObject {
                     let dDoc = MongoWireClient.BSONDoc(dp)
                     let dId = dDoc["device_id"]?.stringValue ?? ""
                     let dStatus = (dDoc["status"]?.stringValue ?? "").uppercased()
-                    if dId == deviceId && dStatus == "BLOCKED" {
-                        thisDeviceBlocked = true
-                    }
-                    if dStatus == "ACTIVE" {
-                        activeDevices.append(dId)
-                    }
+                    if dId == deviceId && dStatus == "BLOCKED" { thisDeviceBlocked = true }
+                    if dStatus == "ACTIVE" { activeDevices.append(dId) }
                 }
             }
 
@@ -165,10 +197,7 @@ final class LicenseService: ObservableObject {
                 return
             }
 
-            // 3. Update `licenses` document (status = ACTIVE, activated_at = now, expires_at)
-            var licSet: [(String, MongoWireClient.BSONValue)] = [
-                ("status", .string("ACTIVE"))
-            ]
+            var licSet: [(String, MongoWireClient.BSONValue)] = [("status", .string("ACTIVE"))]
             if activatedAt == 0 {
                 licSet.append(("activated_at", .int64(now)))
                 if !isLifetime && expiresAt == 0 {
@@ -187,7 +216,6 @@ final class LicenseService: ObservableObject {
                 ]))
             ]))
 
-            // 4. Upsert `devices` document so Laptop License Manager immediately shows this iPad!
             _ = try await client.runCommand(database: db, command: MongoWireClient.BSONDoc([
                 ("update", .string("devices")),
                 ("updates", .array([
@@ -212,7 +240,6 @@ final class LicenseService: ObservableObject {
                 ]))
             ]))
 
-            // 5. Write audit log entry (matches mongo_backend.py _log)
             if !isVerifyOnly {
                 _ = try? await client.runCommand(database: db, command: MongoWireClient.BSONDoc([
                     ("insert", .string("audit_logs")),
@@ -230,33 +257,38 @@ final class LicenseService: ObservableObject {
                 ]))
             }
 
-            // 6. Optional: pull shared Gemini API key from `global_settings` if configured in Admin App
+            // Sync ALL AI keys (Gemini + Anthropic Claude + preferred provider) from Laptop License Manager's global_settings!
             if let settingsRes = try? await client.runCommand(database: db, command: MongoWireClient.BSONDoc([
                 ("find", .string("global_settings")),
-                ("filter", .document([("k", .string("gemini_api_key"))])),
-                ("limit", .int32(1))
+                ("filter", .document([]))
             ])),
                let sCur = settingsRes["cursor"]?.docValue,
-               let sBatch = MongoWireClient.BSONDoc(sCur)["firstBatch"]?.arrayValue,
-               let sFirst = sBatch.first?.docValue,
-               let gKey = MongoWireClient.BSONDoc(sFirst)["v"]?.stringValue,
-               !gKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                cloudGeminiKey = gKey.trimmingCharacters(in: .whitespacesAndNewlines)
+               let sBatch = MongoWireClient.BSONDoc(sCur)["firstBatch"]?.arrayValue {
+                for entry in sBatch {
+                    guard let pairs = entry.docValue else { continue }
+                    let doc = MongoWireClient.BSONDoc(pairs)
+                    let k = doc["k"]?.stringValue ?? ""
+                    let v = (doc["v"]?.stringValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                    if k == "gemini_api_key" && !v.isEmpty { cloudGeminiKey = v }
+                    if k == "anthropic_api_key" && !v.isEmpty { cloudAnthropicKey = v }
+                    if k == "ai_provider" && !v.isEmpty { cloudAIProvider = v.lowercased() }
+                }
             }
 
             customerName = lic["customer_name"]?.stringValue ?? ""
             planName = lic["plan_name"]?.stringValue ?? (isLifetime ? "Lifetime" : "Active")
             isActivated = true
-            statusMessage = "Cloud Database Synced! Active on \(deviceName) (\(planName))."
+            var syncedKeys: [String] = []
+            if !cloudGeminiKey.isEmpty { syncedKeys.append("Gemini") }
+            if !cloudAnthropicKey.isEmpty { syncedKeys.append("Claude") }
+            let keyNote = syncedKeys.isEmpty ? "" : " • Synced \(syncedKeys.joined(separator: " + ")) AI Key"
+            statusMessage = "Cloud Active on \(deviceName) (\(planName))\(keyNote)."
         } catch {
-            if !isVerifyOnly {
-                isActivated = false
-            }
+            if !isVerifyOnly { isActivated = false }
             statusMessage = "Cloud sync failed: \(error.localizedDescription)"
         }
     }
 
-    // MARK: - Optional HTTP Central License Server Support
     private func activateViaHTTP(baseURL: String, key: String) async {
         let cleanServer = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: "\(cleanServer)/api/v1/license/activate") else {

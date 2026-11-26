@@ -27,7 +27,7 @@ final class EmbeddedBrowserStore: ObservableObject {
     }
     @Published var zoomLevel: Double {
         didSet {
-            UserDefaults.standard.set(zoomLevel, forKey: "secure_ai_browser_zoom_v3")
+            UserDefaults.standard.set(zoomLevel, forKey: "secure_ai_browser_zoom_v5")
             applyZoom()
         }
     }
@@ -37,12 +37,13 @@ final class EmbeddedBrowserStore: ObservableObject {
     static let desktopUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
 
     init() {
-        let saved = UserDefaults.standard.double(forKey: "secure_ai_browser_zoom_v3")
-        self.zoomLevel = (saved >= 0.50 && saved <= 1.25) ? saved : 0.80
+        let saved = UserDefaults.standard.double(forKey: "secure_ai_browser_zoom_v5")
+        // Matches Chrome 67% zoom from user's PC setup (shows full SECURE dashboard + work list cleanly)
+        self.zoomLevel = (saved >= 0.45 && saved <= 1.25) ? saved : 0.67
     }
 
     func zoomOut() {
-        zoomLevel = max(0.50, (zoomLevel - 0.05).roundedToTwo)
+        zoomLevel = max(0.45, (zoomLevel - 0.05).roundedToTwo)
     }
 
     func zoomIn() {
@@ -50,32 +51,53 @@ final class EmbeddedBrowserStore: ObservableObject {
     }
 
     func resetZoom() {
-        zoomLevel = 0.80
+        zoomLevel = 0.67
     }
 
-    /// Fits SECURE v2 edge-to-edge like a real 1280px+ laptop screen with zero blank right margin.
-    /// Lower zoom % widens the virtual desktop viewport so more content fits edge-to-edge cleanly.
+    /// Chrome-exact live zoom using `transform: scale(z)` + `width: (100/z)%` so:
+    /// - 67% zoom renders a 149.25% wide desktop canvas scaled cleanly to 100.0% of the browser pane (zero blank right margin!)
+    /// - Tapping `-` ALWAYS shrinks immediately without page reload
+    /// - Tapping `+` ALWAYS enlarges immediately without page reload
     func applyZoom() {
         guard let wv = webView else { return }
         wv.pageZoom = 1.0
-        let virtualWidth = Int(round(980.0 / max(0.50, zoomLevel)))
+        let z = zoomLevel
+        let invPct = String(format: "%.3f", 100.0 / z)
+        let scaleStr = String(format: "%.3f", z)
         let js = """
         (function() {
-          if (document && document.documentElement) {
-            document.documentElement.style.zoom = '';
-          }
-          var meta = document.querySelector('meta[name="viewport"]');
-          if (!meta) {
-            meta = document.createElement('meta');
-            meta.name = 'viewport';
-            document.head && document.head.appendChild(meta);
-          }
-          if (meta) {
-            meta.setAttribute('content', 'width=\(virtualWidth), initial-scale=1.0, maximum-scale=3.0, user-scalable=yes');
+          var el = document.documentElement;
+          if (!el) return;
+          el.style.zoom = '';
+          if (Math.abs(\(scaleStr) - 1.0) < 0.01) {
+            el.style.transform = '';
+            el.style.transformOrigin = '';
+            el.style.width = '';
+            el.style.height = '';
+          } else {
+            el.style.transformOrigin = '0 0';
+            el.style.transform = 'scale(\(scaleStr))';
+            el.style.width = '\(invPct)%';
+            el.style.height = '\(invPct)%';
           }
         })();
         """
         wv.evaluateJavaScript(js, completionHandler: nil)
+    }
+
+    func autoFillLogin(userId: String, password: String) async -> String {
+        do {
+            let raw = try await callAutomationJS(
+                "return await window.__SECURE_AI_IPAD__.autoFillSecureLogin(u, p);",
+                arguments: ["u": userId, "p": password]
+            )
+            if let dict = raw as? [String: Any], let msg = dict["message"] as? String {
+                return msg
+            }
+            return "Filled credentials for \(userId)."
+        } catch {
+            return "Login fill error: \(error.localizedDescription)"
+        }
     }
 
     func navigate(input: String) {

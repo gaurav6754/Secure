@@ -5,17 +5,85 @@ struct SettingsLicenseView: View {
     @EnvironmentObject var automation: AutomationController
     @EnvironmentObject var license: LicenseService
     @EnvironmentObject var theme: ThemeManager
+    @EnvironmentObject var savedLogins: SavedLoginStore
     @Binding var geminiApiKey: String
+    @Binding var showAddLoginSheet: Bool
 
     private var pal: AppThemePalette { theme.palette }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                // Appearance & Themes (Ported from PC ui_theme.py)
+                // 1. Saved SECURE Login IDs (Persists Across Reinstalls in Keychain)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        Label("Appearance & Themes", systemImage: "paintpalette.fill")
+                        Label("Saved SECURE Login IDs", systemImage: "person.badge.key.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(pal.fg)
+                        Spacer()
+                        Button {
+                            showAddLoginSheet = true
+                        } label: {
+                            Label("Add", systemImage: "plus")
+                                .font(.system(size: 11, weight: .bold))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 4)
+                                .background(pal.accent)
+                                .foregroundColor(.white)
+                                .cornerRadius(7)
+                        }
+                    }
+
+                    if savedLogins.accounts.isEmpty {
+                        Text("Save multiple SECURE User IDs here so you can auto-fill login in 1 tap from the browser toolbar.")
+                            .font(.system(size: 11))
+                            .foregroundColor(pal.muted)
+                    } else {
+                        ForEach(savedLogins.accounts) { acc in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(acc.label)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundColor(pal.fg)
+                                    Text(acc.userId)
+                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .foregroundColor(pal.muted)
+                                }
+                                Spacer()
+                                Button("Fill") {
+                                    Task { _ = await browser.autoFillLogin(userId: acc.userId, password: acc.password) }
+                                }
+                                .font(.system(size: 11, weight: .bold))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 4)
+                                .background(SecureTheme.blue)
+                                .foregroundColor(.white)
+                                .cornerRadius(6)
+
+                                Button {
+                                    savedLogins.delete(acc)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(SecureTheme.red)
+                                        .padding(4)
+                                }
+                            }
+                            .padding(8)
+                            .background(pal.bg.opacity(0.6))
+                            .cornerRadius(8)
+                        }
+                    }
+                }
+                .padding(11)
+                .background(pal.card.opacity(0.82))
+                .cornerRadius(11)
+                .overlay(RoundedRectangle(cornerRadius: 11).stroke(pal.line.opacity(0.7), lineWidth: 1))
+
+                // 2. Appearance, Frosted Glass & Wallpapers (Ported from PC ui_theme.py)
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack {
+                        Label("Appearance, Glass & Wallpapers", systemImage: "paintpalette.fill")
                             .font(.system(size: 13, weight: .bold))
                             .foregroundColor(pal.fg)
                         Spacer()
@@ -23,6 +91,20 @@ struct SettingsLicenseView: View {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(pal.accent)
                     }
+
+                    Toggle(isOn: $theme.frostedGlass) {
+                        Text("Frosted Glass Effect")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(pal.fg)
+                    }
+                    .tint(pal.accent)
+
+                    Picker("Wallpaper", selection: $theme.wallpaper) {
+                        ForEach(WallpaperStyle.allCases) { wp in
+                            Text(wp.rawValue).tag(wp)
+                        }
+                    }
+                    .pickerStyle(.segmented)
 
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 7) {
                         ForEach(AppThemePalette.all) { item in
@@ -59,36 +141,12 @@ struct SettingsLicenseView: View {
                         }
                     }
                 }
-                .padding(10)
-                .background(pal.card)
-                .cornerRadius(9)
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(pal.line, lineWidth: 1))
+                .padding(11)
+                .background(pal.card.opacity(0.82))
+                .cornerRadius(11)
+                .overlay(RoundedRectangle(cornerRadius: 11).stroke(pal.line.opacity(0.7), lineWidth: 1))
 
-                // Google Gemini API Key
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Google Gemini API Key (100% AI)")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(pal.fg)
-
-                    SecureField("Paste AIza... key here", text: $geminiApiKey)
-                        .textFieldStyle(.roundedBorder)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled(true)
-
-                    Button {
-                        browser.navigate(input: "https://aistudio.google.com/apikey")
-                    } label: {
-                        Label("Get Free Gemini API Key in Browser", systemImage: "key.fill")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(pal.accent)
-                    }
-                }
-                .padding(10)
-                .background(pal.card)
-                .cornerRadius(9)
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(pal.line, lineWidth: 1))
-
-                // Cloud License Activation
+                // 3. Cloud License Activation (Keychain Persistent + Syncs Gemini & Claude Keys)
                 VStack(alignment: .leading, spacing: 7) {
                     HStack {
                         Text("SECURE AI Cloud License")
@@ -104,7 +162,7 @@ struct SettingsLicenseView: View {
                             .cornerRadius(6)
                     }
 
-                    Text("Connected to the same MongoDB Atlas Cloud Database as your PC License Manager.")
+                    Text("Saved in Keychain (survives reinstalls) and synced with your PC License Manager & AI keys.")
                         .font(.system(size: 10.5))
                         .foregroundColor(pal.muted)
 
@@ -118,10 +176,8 @@ struct SettingsLicenseView: View {
                         Task { await license.activateLicense() }
                     } label: {
                         HStack(spacing: 6) {
-                            if license.isChecking {
-                                ProgressView().tint(.white)
-                            }
-                            Text(license.isChecking ? "Syncing with Cloud Database..." : "Activate & Sync with Cloud")
+                            if license.isChecking { ProgressView().tint(.white) }
+                            Text(license.isChecking ? "Syncing with Cloud Database..." : "Activate & Sync Cloud Keys")
                         }
                         .font(.system(size: 12, weight: .bold))
                         .frame(maxWidth: .infinity)
@@ -136,40 +192,40 @@ struct SettingsLicenseView: View {
                         .font(.system(size: 11))
                         .foregroundColor(license.isActivated ? SecureTheme.green : SecureTheme.amber)
 
-                    if !license.customerName.isEmpty || !license.planName.isEmpty {
-                        Text("Customer: \(license.customerName.isEmpty ? "-" : license.customerName) • Plan: \(license.planName)")
-                            .font(.system(size: 10.5))
-                            .foregroundColor(pal.fg)
-                    }
-
-                    DisclosureGroup("Cloud Database URI (Advanced)") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            TextField("mongodb+srv://... or https://...", text: $license.serverURL)
-                                .textFieldStyle(.roundedBorder)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled(true)
-                                .font(.system(size: 11))
-                            Button("Restore Default SECURE AI Cloud DB") {
-                                license.serverURL = LicenseService.defaultCloudMongoURI
-                            }
-                            .font(.system(size: 11))
-                            .foregroundColor(pal.accent)
+                    if !license.cloudGeminiKey.isEmpty || !license.cloudAnthropicKey.isEmpty {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.seal.fill").foregroundColor(SecureTheme.green)
+                            Text("Synced from Admin: \(license.cloudGeminiKey.isEmpty ? "" : "Gemini ") \(license.cloudAnthropicKey.isEmpty ? "" : "Claude")")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundColor(SecureTheme.green)
                         }
-                        .padding(.top, 4)
                     }
-                    .font(.system(size: 11))
-                    .foregroundColor(pal.muted)
 
-                    Text("Device ID: \(license.deviceId.prefix(16))... (\(license.osInfo))")
+                    Text("Stable Device ID: \(license.deviceId.prefix(16))... (\(license.osInfo))")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(pal.muted)
                 }
-                .padding(10)
-                .background(pal.card)
-                .cornerRadius(9)
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(pal.line, lineWidth: 1))
+                .padding(11)
+                .background(pal.card.opacity(0.82))
+                .cornerRadius(11)
+                .overlay(RoundedRectangle(cornerRadius: 11).stroke(pal.line.opacity(0.7), lineWidth: 1))
 
-                // Live Automation Log Console
+                // 4. Optional Manual Gemini API Key Override
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Custom Gemini API Key (Optional Override)")
+                        .font(.system(size: 12.5, weight: .bold))
+                        .foregroundColor(pal.fg)
+                    SecureField("Auto-synced from License Manager (or paste AIza...)", text: $geminiApiKey)
+                        .textFieldStyle(.roundedBorder)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                }
+                .padding(11)
+                .background(pal.card.opacity(0.82))
+                .cornerRadius(11)
+                .overlay(RoundedRectangle(cornerRadius: 11).stroke(pal.line.opacity(0.7), lineWidth: 1))
+
+                // 5. Live Automation Log Console
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text("Live Automation Log")
@@ -180,7 +236,6 @@ struct SettingsLicenseView: View {
                             .font(.system(size: 11))
                             .foregroundColor(pal.muted)
                     }
-
                     if automation.logs.isEmpty {
                         Text("No logs yet. Load an estimate and press START.")
                             .font(.system(size: 11))
@@ -194,10 +249,10 @@ struct SettingsLicenseView: View {
                         }
                     }
                 }
-                .padding(10)
-                .background(pal.card)
-                .cornerRadius(9)
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(pal.line, lineWidth: 1))
+                .padding(11)
+                .background(pal.card.opacity(0.82))
+                .cornerRadius(11)
+                .overlay(RoundedRectangle(cornerRadius: 11).stroke(pal.line.opacity(0.7), lineWidth: 1))
             }
             .padding(12)
         }

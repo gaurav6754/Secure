@@ -117,7 +117,9 @@ final class AutomationController: ObservableObject {
         appendLog("Started \(title) (\(units.count) steps at \(speed.rawValue))")
 
         runTask = Task { @MainActor in
-            for unit in units {
+            var unitIdx = 0
+            while unitIdx < units.count {
+                let unit = units[unitIdx]
                 if stopRequested { break }
                 while isPaused && !stopRequested {
                     try? await Task.sleep(nanoseconds: 200_000_000)
@@ -128,34 +130,30 @@ final class AutomationController: ObservableObject {
                 lastErrorBanner = nil
                 appendLog("▶ \(unit.label)")
 
+                var stepSucceeded = false
                 do {
                     let (ok, message) = try await execute(unit: unit, browser: browser)
                     dismissKeyboard()
                     if ok {
                         appendLog("✓ \(message)")
+                        stepSucceeded = true
                     } else {
-                        // CRITICAL: Pause immediately on failure so automation NEVER blindly races through 39 steps!
                         lastErrorBanner = message
                         isPaused = true
                         appendLog("⚠ PAUSED at \(unit.label): \(message)")
-                        while isPaused && !stopRequested {
-                            try? await Task.sleep(nanoseconds: 250_000_000)
-                        }
-                        if stopRequested { break }
                     }
                 } catch {
                     lastErrorBanner = error.localizedDescription
                     isPaused = true
                     appendLog("⚠ PAUSED at \(unit.label): \(error.localizedDescription)")
-                    while isPaused && !stopRequested {
-                        try? await Task.sleep(nanoseconds: 250_000_000)
-                    }
-                    if stopRequested { break }
                 }
 
-                completedSteps += 1
-                let baseDelayMs = 450.0 / speed.multiplier
-                try? await Task.sleep(nanoseconds: UInt64(max(80.0, baseDelayMs) * 1_000_000))
+                if stepSucceeded {
+                    completedSteps += 1
+                    unitIdx += 1
+                    let baseDelayMs = 450.0 / speed.multiplier
+                    try? await Task.sleep(nanoseconds: UInt64(max(80.0, baseDelayMs) * 1_000_000))
+                }
             }
 
             isRunning = false

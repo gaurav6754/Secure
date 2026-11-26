@@ -3,6 +3,8 @@ import UniformTypeIdentifiers
 
 struct AI100GeneratorView: View {
     @EnvironmentObject var automation: AutomationController
+    @EnvironmentObject var license: LicenseService
+    @EnvironmentObject var theme: ThemeManager
     @StateObject private var speech = SpeechRecognizerService()
 
     @Binding var geminiApiKey: String
@@ -16,15 +18,35 @@ struct AI100GeneratorView: View {
     @State private var isGenerating = false
     @State private var errorMessage: String? = nil
 
+    private var pal: AppThemePalette { theme.palette }
+
+    private var effectiveGeminiKey: String {
+        let local = geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        return local.isEmpty ? license.cloudGeminiKey : local
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("100% AI Estimate Generator")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(SecureTheme.fg)
+                HStack {
+                    Text("100% AI Estimate Generator")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(pal.fg)
+                    Spacer()
+                    if !effectiveGeminiKey.isEmpty || !license.cloudAnthropicKey.isEmpty {
+                        Text(license.cloudAIProvider == "claude" && !license.cloudAnthropicKey.isEmpty ? "Claude Synced" : "Gemini Synced")
+                            .font(.system(size: 10, weight: .bold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(SecureTheme.green.opacity(0.2))
+                            .foregroundColor(SecureTheme.green)
+                            .cornerRadius(6)
+                    }
+                }
+
                 Text("Speak in English or any Indian language, or attach sample PDFs/site photos. Output is strictly English with official Bihar MGNREGA 54 SOR codes.")
                     .font(.system(size: 11))
-                    .foregroundColor(SecureTheme.muted)
+                    .foregroundColor(pal.muted)
 
                 HStack(spacing: 8) {
                     Picker("Voice Lang", selection: $selectedLangId) {
@@ -35,7 +57,7 @@ struct AI100GeneratorView: View {
                     .pickerStyle(.menu)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(SecureTheme.card)
+                    .background(pal.card.opacity(0.85))
                     .cornerRadius(8)
 
                     Spacer()
@@ -52,7 +74,7 @@ struct AI100GeneratorView: View {
                         .font(.system(size: 12, weight: .bold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .background(speech.isRecording ? SecureTheme.red : SecureTheme.violet)
+                        .background(speech.isRecording ? SecureTheme.red : pal.accent)
                         .foregroundColor(.white)
                         .cornerRadius(8)
                     }
@@ -68,11 +90,11 @@ struct AI100GeneratorView: View {
                     .frame(minHeight: 120)
                     .padding(8)
                     .scrollContentBackground(.hidden)
-                    .background(SecureTheme.card)
-                    .foregroundColor(SecureTheme.fg)
+                    .background(pal.card.opacity(0.85))
+                    .foregroundColor(pal.fg)
                     .font(.system(size: 13))
-                    .cornerRadius(9)
-                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(SecureTheme.line, lineWidth: 1))
+                    .cornerRadius(10)
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(pal.line, lineWidth: 1))
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
@@ -97,8 +119,8 @@ struct AI100GeneratorView: View {
                                 .font(.system(size: 12, weight: .semibold))
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 7)
-                                .background(SecureTheme.panel)
-                                .foregroundColor(SecureTheme.fg)
+                                .background(pal.panel.opacity(0.85))
+                                .foregroundColor(pal.fg)
                                 .cornerRadius(8)
                         }
                         Spacer()
@@ -111,13 +133,13 @@ struct AI100GeneratorView: View {
 
                     ForEach(attachments) { att in
                         HStack {
-                            Image(systemName: "doc.fill").foregroundColor(SecureTheme.accent)
-                            Text(att.fileName).font(.system(size: 11)).foregroundColor(SecureTheme.fg).lineLimit(1)
+                            Image(systemName: "doc.fill").foregroundColor(pal.accent)
+                            Text(att.fileName).font(.system(size: 11)).foregroundColor(pal.fg).lineLimit(1)
                             Spacer()
-                            Text("\(att.data.count / 1024) KB").font(.system(size: 10)).foregroundColor(SecureTheme.muted)
+                            Text("\(att.data.count / 1024) KB").font(.system(size: 10)).foregroundColor(pal.muted)
                         }
                         .padding(6)
-                        .background(SecureTheme.card)
+                        .background(pal.card.opacity(0.8))
                         .cornerRadius(6)
                     }
                 }
@@ -142,7 +164,7 @@ struct AI100GeneratorView: View {
                     .font(.system(size: 14, weight: .bold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
-                    .background(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGenerating ? SecureTheme.panel : SecureTheme.accent)
+                    .background(promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isGenerating ? pal.panel : pal.accent)
                     .foregroundColor(.white)
                     .cornerRadius(10)
                 }
@@ -184,10 +206,10 @@ struct AI100GeneratorView: View {
             .font(.system(size: 11, weight: .semibold))
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(SecureTheme.card)
-            .foregroundColor(SecureTheme.accent)
+            .background(pal.card.opacity(0.85))
+            .foregroundColor(pal.accent)
             .cornerRadius(14)
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(SecureTheme.line, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(pal.line, lineWidth: 1))
     }
 
     private func runGeneration() async {
@@ -199,11 +221,13 @@ struct AI100GeneratorView: View {
             let est = try await GeminiAIService.shared.generateEstimate(
                 prompt: promptText,
                 attachments: attachments,
-                apiKey: geminiApiKey
+                geminiApiKey: effectiveGeminiKey,
+                anthropicApiKey: license.cloudAnthropicKey,
+                preferredProvider: license.cloudAIProvider
             )
             automation.activeEstimate = est
             automation.isVerifiedByUser = false
-            automation.appendLog("✨ 100% AI generated '\(est.title)' (\(est.headings.count) headings, \(est.totalItemCount) items)")
+            automation.appendLog("✨ 100% AI generated '\(est.title)' (\(est.headings.count) H, \(est.totalItemCount) items)")
             onEstimateReady()
         } catch {
             errorMessage = error.localizedDescription

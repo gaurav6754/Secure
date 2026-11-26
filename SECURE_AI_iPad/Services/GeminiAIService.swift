@@ -8,8 +8,8 @@ struct AIAttachment: Identifiable, Hashable {
     let data: Data
 }
 
-/// 100% AI Estimate Generator powered by Google Gemini API (gemini-2.5-flash)
-/// Grounded in the bundled 605-item Bihar MGNREGA SOR catalog (`official_54_catalog.json`).
+/// 100% AI Estimate Generator supporting BOTH Google Gemini (`gemini-2.5-flash`) AND Anthropic Claude (`claude-sonnet-4-5`)
+/// Automatically uses API keys synced from your Laptop License Manager (`global_settings`) or entered in Settings.
 final class GeminiAIService {
     static let shared = GeminiAIService()
     private init() {}
@@ -17,11 +17,16 @@ final class GeminiAIService {
     func generateEstimate(
         prompt: String,
         attachments: [AIAttachment],
-        apiKey: String
+        geminiApiKey: String,
+        anthropicApiKey: String = "",
+        preferredProvider: String = "gemini"
     ) async throws -> EstimateDocument {
-        let cleanKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanKey.isEmpty else {
-            throw NSError(domain: "GeminiAIService", code: 401, userInfo: [NSLocalizedDescriptionKey: "Please enter your free Google Gemini API key in Settings first."])
+        let cleanGemini = geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanClaude = anthropicApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let useClaude = (preferredProvider == "claude" && !cleanClaude.isEmpty) || (cleanGemini.isEmpty && !cleanClaude.isEmpty)
+        if !useClaude && cleanGemini.isEmpty {
+            throw NSError(domain: "GeminiAIService", code: 401, userInfo: [NSLocalizedDescriptionKey: "No Gemini or Claude API key found. Activate your Cloud License to auto-sync keys from your PC License Manager, or paste a key in Settings."])
         }
 
         let catalogSummary = buildRelevantCatalogContext(for: prompt)
@@ -56,16 +61,20 @@ final class GeminiAIService {
         3. Use ONLY real Bihar SECURE SOR item codes from the catalog provided below (or exact codes from an attached sample estimate PDF).
         4. If an attached sample PDF is provided with a requested new length (e.g., 400 ft -> 500 ft), preserve all headings, SOR codes, and cross-section dimensions (B, D) while scaling lengths proportionally.
         5. Keep every measurement dimension numeric (no units inside l/b/d/no fields). Use isDeduction=true for deductions.
-        6. Include realistic Bihar MGNREGA Lump Sum items where appropriate (e.g., Conveyance - M, Display Board / CIB - M, Labour Welfare fund/Cess - A, Quality control and Survey - A, Miscellaneous /Contingencies charges - M).
+        6. Include realistic Bihar MGNREGA Lump Sum items where appropriate (Conveyance, GST, Display Board / CIB, Labour Welfare fund/Cess, Miscellaneous).
 
         BIHAR MGNREGA SOR CATALOG EXCERPT:
         \(catalogSummary)
         """
 
+        if useClaude {
+            let raw = try await postAnthropic(apiKey: cleanClaude, system: systemInstruction, prompt: prompt, attachments: attachments)
+            return try decodeEstimateJSON(raw, sourceName: "100% AI (Claude)")
+        }
+
         var parts: [[String: Any]] = [
             ["text": "User Civil Engineering Request:\n\(prompt)\n\nGenerate the complete SECURE estimate JSON strictly in English."]
         ]
-
         for att in attachments {
             parts.append([
                 "inline_data": [
@@ -89,11 +98,17 @@ final class GeminiAIService {
 
         for model in models {
             do {
-                let rawJSON = try await postGemini(model: model, apiKey: cleanKey, payload: payload)
+                let rawJSON = try await postGemini(model: model, apiKey: cleanGemini, payload: payload)
                 return try decodeEstimateJSON(rawJSON, sourceName: "100% AI (\(model))")
             } catch {
                 lastError = error
             }
+        }
+
+        // Automatic fallback to synced Claude key if Gemini fails
+        if !cleanClaude.isEmpty {
+            let raw = try await postAnthropic(apiKey: cleanClaude, system: systemInstruction, prompt: prompt, attachments: attachments)
+            return try decodeEstimateJSON(raw, sourceName: "100% AI (Claude Fallback)")
         }
         throw lastError
     }
@@ -128,11 +143,62 @@ final class GeminiAIService {
         return text
     }
 
+    private func postAnthropic(apiKey: String, system: String, prompt: String, attachments: [AIAttachment]) async throws -> String {
+        guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
+            throw NSError(domain: "GeminiAIService", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid Anthropic URL."])
+        }
+        var contentBlocks: [[String: Any]] = []
+        for att in attachments {
+            if att.mimeType == "application/pdf" {
+                contentBlocks.append([
+                    "type": "document",
+                    "source": ["type": "base64", "media_type": "application/pdf", "data": att.data.base64EncodedString()]
+                ])
+            } else if att.mimeType.hasPrefix("image/") {
+                contentBlocks.append([
+                    "type": "image",
+                    "source": ["type": "base64", "media_type": att.mimeType, "data": att.data.base64EncodedString()]
+                ])
+            }
+        }
+        contentBlocks.append(["type": "text", "text": "User Civil Engineering Request:\n\(prompt)\n\nReturn ONLY raw JSON strictly in English."])
+
+        let body: [String: Any] = [
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 8192,
+            "system": system,
+            "messages": [["role": "user", "content": contentBlocks]]
+        ]
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 120
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let bodyText = String(data: data, encoding: .utf8) ?? "Anthropic error"
+            throw NSError(domain: "GeminiAIService", code: 500, userInfo: [NSLocalizedDescriptionKey: "Claude API error: \(bodyText.prefix(240))"])
+        }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let content = json["content"] as? [[String: Any]],
+              let text = content.compactMap({ $0["text"] as? String }).joined().nilIfEmpty else {
+            throw NSError(domain: "GeminiAIService", code: 502, userInfo: [NSLocalizedDescriptionKey: "Claude returned an empty response."])
+        }
+        return text
+    }
+
     private func decodeEstimateJSON(_ rawText: String, sourceName: String) throws -> EstimateDocument {
         var cleaned = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleaned.hasPrefix("```") {
             cleaned = cleaned.replacingOccurrences(of: #"^```(?:json)?\s*"#, with: "", options: .regularExpression)
             cleaned = cleaned.replacingOccurrences(of: #"\s*```$"#, with: "", options: .regularExpression)
+        }
+        if let firstBrace = cleaned.firstIndex(of: "{"), let lastBrace = cleaned.lastIndex(of: "}") {
+            cleaned = String(cleaned[firstBrace...lastBrace])
         }
         guard let data = cleaned.data(using: .utf8) else {
             throw NSError(domain: "GeminiAIService", code: 503, userInfo: [NSLocalizedDescriptionKey: "Failed to encode AI JSON output."])
@@ -154,18 +220,13 @@ final class GeminiAIService {
             lumpSums: decoded.lumpSums ?? []
         )
 
-        // Enrich missing rates/units from official catalog
         let map = PDFEstimateParser.shared.catalogByCode
         for hi in est.headings.indices {
             for ii in est.headings[hi].items.indices {
                 let code = est.headings[hi].items[ii].code.uppercased()
                 if let match = map[code] {
-                    if est.headings[hi].items[ii].rate <= 0 {
-                        est.headings[hi].items[ii].rate = match.rate
-                    }
-                    if est.headings[hi].items[ii].unit.isEmpty {
-                        est.headings[hi].items[ii].unit = match.unit
-                    }
+                    if est.headings[hi].items[ii].rate <= 0 { est.headings[hi].items[ii].rate = match.rate }
+                    if est.headings[hi].items[ii].unit.isEmpty { est.headings[hi].items[ii].unit = match.unit }
                 }
             }
         }
