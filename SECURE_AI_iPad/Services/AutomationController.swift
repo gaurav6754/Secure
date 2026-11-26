@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 @MainActor
 final class AutomationController: ObservableObject {
@@ -9,6 +10,7 @@ final class AutomationController: ObservableObject {
     @Published var isRunning: Bool = false
     @Published var isPaused: Bool = false
     @Published var currentStepLabel: String = "Idle"
+    @Published var lastErrorBanner: String? = nil
     @Published var completedSteps: Int = 0
     @Published var totalSteps: Int = 0
     @Published var logs: [String] = []
@@ -23,6 +25,10 @@ final class AutomationController: ObservableObject {
         let line = "[\(formatter.string(from: Date()))] \(message)"
         logs.insert(line, at: 0)
         if logs.count > 250 { logs.removeLast() }
+    }
+
+    func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     func buildUnits(from est: EstimateDocument) -> [AutomationUnit] {
@@ -83,6 +89,7 @@ final class AutomationController: ObservableObject {
             appendLog("No estimate loaded. Import a PDF or generate via 100% AI first.")
             return
         }
+        dismissKeyboard()
         let units = buildUnits(from: est)
         runUnits(units, browser: browser, title: "Estimate Entry")
     }
@@ -93,6 +100,7 @@ final class AutomationController: ObservableObject {
             appendLog("No repair actions queued.")
             return
         }
+        dismissKeyboard()
         runUnits(allRepair, browser: browser, title: "Verify & Fix Repair (Delete + Re-Add)")
     }
 
@@ -103,6 +111,7 @@ final class AutomationController: ObservableObject {
         isRunning = true
         isPaused = false
         stopRequested = false
+        lastErrorBanner = nil
         completedSteps = 0
         totalSteps = units.count
         appendLog("Started \(title) (\(units.count) steps at \(speed.rawValue))")
@@ -116,17 +125,35 @@ final class AutomationController: ObservableObject {
                 if stopRequested { break }
 
                 currentStepLabel = unit.label
+                lastErrorBanner = nil
                 appendLog("▶ \(unit.label)")
 
                 do {
-                    let result = try await execute(unit: unit, browser: browser)
-                    appendLog("✓ \(result)")
+                    let (ok, message) = try await execute(unit: unit, browser: browser)
+                    dismissKeyboard()
+                    if ok {
+                        appendLog("✓ \(message)")
+                    } else {
+                        // CRITICAL: Pause immediately on failure so automation NEVER blindly races through 39 steps!
+                        lastErrorBanner = message
+                        isPaused = true
+                        appendLog("⚠ PAUSED at \(unit.label): \(message)")
+                        while isPaused && !stopRequested {
+                            try? await Task.sleep(nanoseconds: 250_000_000)
+                        }
+                        if stopRequested { break }
+                    }
                 } catch {
-                    appendLog("⚠ \(unit.label) failed: \(error.localizedDescription)")
+                    lastErrorBanner = error.localizedDescription
+                    isPaused = true
+                    appendLog("⚠ PAUSED at \(unit.label): \(error.localizedDescription)")
+                    while isPaused && !stopRequested {
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                    }
+                    if stopRequested { break }
                 }
 
                 completedSteps += 1
-                // Scaled inter-step pacing (portal mutation waits inside JS remain wall-clock safe)
                 let baseDelayMs = 450.0 / speed.multiplier
                 try? await Task.sleep(nanoseconds: UInt64(max(80.0, baseDelayMs) * 1_000_000))
             }
@@ -141,6 +168,7 @@ final class AutomationController: ObservableObject {
     func togglePause() {
         guard isRunning else { return }
         isPaused.toggle()
+        if !isPaused { lastErrorBanner = nil }
         appendLog(isPaused ? "⏸ Paused" : "▶ Resumed")
     }
 
@@ -150,10 +178,9 @@ final class AutomationController: ObservableObject {
         runTask = nil
         isRunning = false
         isPaused = false
+        lastErrorBanner = nil
     }
 
-    /// Scrapes the live SECURE draft page inside WKWebView and compares against `activeEstimate`.
-    /// Builds Delete + Re-Add repair units matching SECURE AI v3.0.10's Verify & Fix Error rule.
     func verifyAgainstLivePortal(browser: EmbeddedBrowserStore) async {
         guard let target = activeEstimate else {
             appendLog("Load your PDF or AI estimate first before running Verify.")
@@ -195,7 +222,6 @@ final class AutomationController: ObservableObject {
                 let portalCodes = Set(portalHeading.items.map { $0.code.uppercased() })
                 let expectedCodes = Set(heading.items.map { $0.code.uppercased() })
 
-                // Missing items -> Add Item + Fill Measurements
                 for (ii, item) in heading.items.enumerated() where !portalCodes.contains(item.code.uppercased()) {
                     var repair: [AutomationUnit] = [
                         AutomationUnit(id: "FIX_ADD_\(hi).\(ii)", kind: .addItem, label: "Add Missing Item \(item.code)", headingIndex: hi, itemIndex: ii, headingText: heading.text, item: item, lumpSum: nil)
@@ -212,7 +238,6 @@ final class AutomationController: ObservableObject {
                     ))
                 }
 
-                // Extra / wrong items -> Delete via SweetAlert2
                 for pItem in portalHeading.items where !expectedCodes.contains(pItem.code.uppercased()) {
                     let delItem = EstimateItem(code: pItem.code, description: pItem.description)
                     found.append(VerifyMismatch(
@@ -238,26 +263,26 @@ final class AutomationController: ObservableObject {
         }
     }
 
-    private func execute(unit: AutomationUnit, browser: EmbeddedBrowserStore) async throws -> String {
+    private func execute(unit: AutomationUnit, browser: EmbeddedBrowserStore) async throws -> (Bool, String) {
         switch unit.kind {
         case .addHeading:
             let res = try await browser.callAutomationJS(
                 "return await window.__SECURE_AI_IPAD__.addHeading(text);",
                 arguments: ["text": unit.headingText ?? "HEADING"]
             )
-            return extractJSMessage(res)
+            return extractJSResult(res)
 
         case .addItem:
-            guard let item = unit.item else { return "Skipped empty item" }
+            guard let item = unit.item else { return (true, "Skipped empty item") }
             let isTM = item.code.uppercased().contains(".TM.")
             let res = try await browser.callAutomationJS(
                 "return await window.__SECURE_AI_IPAD__.addItem(hi, code, isTM);",
                 arguments: ["hi": unit.headingIndex, "code": item.code, "isTM": isTM]
             )
-            return extractJSMessage(res)
+            return extractJSResult(res)
 
         case .fillMeasurements:
-            guard let item = unit.item else { return "Skipped empty measurements" }
+            guard let item = unit.item else { return (true, "Skipped empty measurements") }
             let rowsArray: [[String: Any]] = item.measurements.map { r in
                 [
                     "desc": r.desc,
@@ -273,27 +298,27 @@ final class AutomationController: ObservableObject {
                 "return await window.__SECURE_AI_IPAD__.fillMeasurements(hi, code, rows);",
                 arguments: ["hi": unit.headingIndex, "code": item.code, "rows": rowsArray]
             )
-            return extractJSMessage(res)
+            return extractJSResult(res)
 
         case .addLumpSum:
-            guard let ls = unit.lumpSum else { return "Skipped empty lump sum" }
+            guard let ls = unit.lumpSum else { return (true, "Skipped empty lump sum") }
             let (keyword, customDesc) = mapLumpSumKeyword(ls)
             let res = try await browser.callAutomationJS(
                 "return await window.__SECURE_AI_IPAD__.addLumpSum(kw, desc, amt);",
                 arguments: ["kw": keyword, "desc": customDesc, "amt": ls.amount]
             )
-            return extractJSMessage(res)
+            return extractJSResult(res)
 
         case .deleteItem:
-            guard let item = unit.item else { return "Skipped delete" }
+            guard let item = unit.item else { return (true, "Skipped delete") }
             let res = try await browser.callAutomationJS(
                 "return await window.__SECURE_AI_IPAD__.deleteItemInHeading(hi, code);",
                 arguments: ["hi": unit.headingIndex, "code": item.code]
             )
-            return extractJSMessage(res)
+            return extractJSResult(res)
 
         case .deleteHeading:
-            return "Delete heading handled"
+            return (true, "Delete heading handled")
         }
     }
 
@@ -322,10 +347,12 @@ final class AutomationController: ObservableObject {
         return ("Miscellaneous", ls.description)
     }
 
-    private func extractJSMessage(_ raw: Any?) -> String {
-        if let dict = raw as? [String: Any], let msg = dict["message"] as? String {
-            return msg
+    private func extractJSResult(_ raw: Any?) -> (Bool, String) {
+        if let dict = raw as? [String: Any] {
+            let ok = (dict["ok"] as? Bool) ?? true
+            let msg = (dict["message"] as? String) ?? "Done"
+            return (ok, msg)
         }
-        return "Done"
+        return (false, "No response from SECURE page script.")
     }
 }

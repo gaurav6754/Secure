@@ -1,12 +1,15 @@
 import Foundation
 
-/// JavaScript DOM automation engine injected directly into the in-app WKWebView.
-/// Replaces desktop OpenCV/PyAutoGUI screen clicking with direct, reliable DOM interaction
-/// for the Bihar MGNREGA SECURE portal (secure.dord.gov.in).
+/// JavaScript DOM automation engine tailored directly to the live Bihar SECURE v2 portal
+/// (`https://secure.dord.gov.in/securev2/`).
+/// - Opens the real "Add Appendix/Description" modal (Heading/Description & Lump sum Type)
+/// - Never triggers the iPad on-screen keyboard during automated typing (`blur()` after input)
+/// - Waits for SECURE v2's "Loading" indicator before proceeding
+/// - Returns `{ ok: false, message: ... }` on any missing control so Swift pauses cleanly instead of skipping steps.
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD__) return;
+      if (window.__SECURE_AI_IPAD_V2__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -18,10 +21,17 @@ enum SecureAutomationJS {
         return rect.width > 1 && rect.height > 1;
       }
 
+      function blurKeyboard() {
+        try {
+          if (document.activeElement && typeof document.activeElement.blur === 'function') {
+            document.activeElement.blur();
+          }
+        } catch (_) {}
+      }
+
       function setNativeValue(el, value) {
         if (!el) return;
         const str = value == null ? '' : String(value);
-        el.focus();
         const proto = el.tagName === 'TEXTAREA'
           ? window.HTMLTextAreaElement.prototype
           : (el.tagName === 'SELECT' ? window.HTMLSelectElement.prototype : window.HTMLInputElement.prototype);
@@ -31,11 +41,12 @@ enum SecureAutomationJS {
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
         el.dispatchEvent(new Event('blur', { bubbles: true }));
+        blurKeyboard();
       }
 
       function clickEl(el) {
         if (!el) return false;
-        el.scrollIntoView({ behavior: 'instant', block: 'center' });
+        try { el.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
         el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
         el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
         el.click();
@@ -45,18 +56,26 @@ enum SecureAutomationJS {
       function isPortalLoading() {
         const selectors = [
           '.spinner', '.loader', '.loading', '.blockUI', '.ngx-spinner-overlay',
-          '.swal2-loading', '[class*="spinner"]', '[class*="loader"]', '#preloader'
+          '.swal2-loading', '[class*="spinner"]', '[class*="loader"]', '#preloader',
+          '.mat-progress-bar', '.progress-bar-animated'
         ];
         for (const sel of selectors) {
-          const nodes = document.querySelectorAll(sel);
-          for (const n of nodes) {
+          for (const n of document.querySelectorAll(sel)) {
             if (isVisible(n)) return true;
+          }
+        }
+        // Check visible "Loading" text badge seen at bottom of SECURE v2
+        const spans = document.querySelectorAll('div, span, p');
+        for (const s of spans) {
+          if (s.children.length === 0 && isVisible(s)) {
+            const t = (s.textContent || '').trim().toLowerCase();
+            if (t === 'loading' || t === 'loading...' || t === 'please wait...') return true;
           }
         }
         return false;
       }
 
-      async function waitForPortalIdle(minWaitMs = 650, maxWaitMs = 20000) {
+      async function waitForPortalIdle(minWaitMs = 700, maxWaitMs = 20000) {
         const start = Date.now();
         await sleep(minWaitMs);
         while (Date.now() - start < maxWaitMs) {
@@ -68,7 +87,7 @@ enum SecureAutomationJS {
 
       function findButtonByText(patterns, root = document) {
         const regexList = patterns.map((p) => (p instanceof RegExp ? p : new RegExp(p, 'i')));
-        const candidates = root.querySelectorAll('button, a.btn, input[type="button"], input[type="submit"], [role="button"]');
+        const candidates = root.querySelectorAll('button, a.btn, input[type="button"], input[type="submit"], [role="button"], a');
         for (const el of candidates) {
           if (!isVisible(el) || el.disabled) continue;
           const txt = (el.innerText || el.value || el.getAttribute('title') || el.getAttribute('aria-label') || '').trim();
@@ -80,8 +99,8 @@ enum SecureAutomationJS {
       function dismissSwalIfAny() {
         const confirmBtn = document.querySelector('.swal2-confirm, button.confirm');
         if (isVisible(confirmBtn)) {
-          const txt = (confirmBtn.innerText || '').toLowerCase();
-          if (txt.includes('ok') || txt.includes('close')) {
+          const txt = (confirmBtn.innerText || '').trim().toLowerCase();
+          if (txt === 'ok' || txt.includes('close')) {
             clickEl(confirmBtn);
             return true;
           }
@@ -106,21 +125,79 @@ enum SecureAutomationJS {
         return { ok: false, message: 'SweetAlert2 delete confirmation button not found' };
       }
 
+      function findActiveAppendixModal() {
+        // SECURE v2 modal header contains "Add Appendix/Description"
+        const containers = document.querySelectorAll('.modal.show, .modal-content, .mat-dialog-container, .p-dialog, [role="dialog"], .card, div');
+        for (const el of containers) {
+          if (!isVisible(el)) continue;
+          const txt = (el.innerText || '');
+          if (txt.includes('Add Appendix/Description') && txt.includes('Lump sum Type')) {
+            // Prefer the tightest container that still holds the checkboxes and Add button
+            const hasAdd = !!findButtonByText([/^add$/i], el);
+            const hasChk = el.querySelectorAll('input[type="checkbox"]').length >= 1;
+            if (hasAdd && hasChk && el.getBoundingClientRect().width < window.innerWidth * 0.92) {
+              return el;
+            }
+          }
+        }
+        return null;
+      }
+
+      async function openAddAppendixModal() {
+        let modal = findActiveAppendixModal();
+        if (modal) return modal;
+
+        // 1. Find clickable "Add Appendix" text or stacked-layers '+' icon (works for div/span/img/svg/button)
+        const allNodes = Array.from(document.querySelectorAll('button, a, div, span, p, img, svg, i, mat-icon'));
+        let trigger = null;
+
+        // Priority A: Exact "Add Appendix" label or its clickable parent card
+        for (const n of allNodes) {
+          if (!isVisible(n)) continue;
+          const t = (n.innerText || n.textContent || '').trim();
+          if (/^add\s*appendix$/i.test(t) && n.children.length <= 2) {
+            trigger = n.closest('button, a, [role="button"], .cursor-pointer') || n.parentElement || n;
+            break;
+          }
+        }
+
+        // Priority B: Stacked-layers '+' icon button at top of left estimate panel (above "No Appendix Added !")
+        if (!trigger) {
+          const imgsAndSvgs = Array.from(document.querySelectorAll('img, svg, i, button, a'))
+            .filter((el) => {
+              if (!isVisible(el)) return false;
+              const r = el.getBoundingClientRect();
+              const meta = `${el.getAttribute('title') || ''} ${el.getAttribute('alt') || ''} ${el.getAttribute('src') || ''} ${el.className || ''}`.toLowerCase();
+              return (meta.includes('appendix') || meta.includes('layer') || meta.includes('add_heading') || meta.includes('plus')) && r.top > 120 && r.top < 480;
+            });
+          if (imgsAndSvgs.length > 0) {
+            trigger = imgsAndSvgs[0].closest('button, a, div') || imgsAndSvgs[0];
+          }
+        }
+
+        if (!trigger) return null;
+        clickEl(trigger);
+
+        for (let i = 0; i < 18; i++) {
+          await sleep(200);
+          modal = findActiveAppendixModal();
+          if (modal) return modal;
+        }
+        return null;
+      }
+
       function findHeadingCards() {
-        const selectors = [
-          '.accordion-item', '.card', '[class*="heading-card"]', '[class*="subhead"]',
-          '.panel', 'li[class*="heading"]', '.list-group-item'
-        ];
         const results = [];
         const seen = new Set();
+        const selectors = ['.accordion-item', '.card', '[class*="heading"]', '[class*="appendix"]', '.panel', '.list-group-item'];
         for (const sel of selectors) {
           for (const el of document.querySelectorAll(sel)) {
             if (!isVisible(el) || seen.has(el)) continue;
             const rect = el.getBoundingClientRect();
-            // Left panel headings sit on the left half of the viewport
-            if (rect.left < window.innerWidth * 0.55 && rect.height >= 24 && rect.width >= 120) {
-              const hasPlusOrTrash = el.querySelector('.fa-plus, .fa-plus-circle, .bi-plus, button[title*="Add"], [title*="Item"], .fa-trash');
-              if (hasPlusOrTrash) {
+            if (rect.left < window.innerWidth * 0.58 && rect.height >= 28 && rect.width >= 120 && rect.top > 120) {
+              const hasAction = el.querySelector('.fa-plus, .fa-plus-circle, .bi-plus, .fa-trash, .fa-edit, button, svg');
+              const txt = (el.innerText || '').trim();
+              if (hasAction && txt.length > 0 && !txt.includes('No Appendix Added') && !txt.includes('Add Appendix/Description')) {
                 seen.add(el);
                 results.push(el);
               }
@@ -132,48 +209,47 @@ enum SecureAutomationJS {
 
       async function addHeading(headingText) {
         dismissSwalIfAny();
-        // 1. Click Add Heading button/icon
-        let addBtn = findButtonByText([/add\s*appendix/i, /add\s*heading/i, /new\s*heading/i, /\+\s*heading/i]);
-        if (!addBtn) {
-          // Look for top-left '+' icon near "Heading" or "Estimate"
-          const icons = document.querySelectorAll('i.fa-plus, i.fa-plus-circle, i.bi-plus-circle, button[title*="Heading"], a[title*="Heading"]');
-          for (const ic of icons) {
-            const target = ic.closest('button, a') || ic;
-            if (isVisible(target) && target.getBoundingClientRect().left < window.innerWidth * 0.5) {
-              addBtn = target;
-              break;
-            }
-          }
-        }
-        if (addBtn) {
-          clickEl(addBtn);
-          await sleep(450);
+        const modal = await openAddAppendixModal();
+        if (!modal) {
+          return { ok: false, message: 'Could not open "Add Appendix/Description" dialog. Make sure you are on the Estimate Edit screen (showing "Add Appendix").' };
         }
 
-        // 2. Find visible Heading input field
-        const inputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type]), textarea'))
+        // Ensure UPPER "Heading / Description" checkbox is checked (NOT "Lump sum Type")
+        const checkboxes = Array.from(modal.querySelectorAll('input[type="checkbox"]'))
+          .filter(isVisible)
+          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+
+        if (checkboxes.length >= 1) {
+          const upperChk = checkboxes[0];
+          if (!upperChk.checked) {
+            clickEl(upperChk);
+            await sleep(300);
+          }
+        }
+
+        // Find the Heading / Description text input inside modal (placeholder "Analysis of Rates")
+        const inputs = Array.from(modal.querySelectorAll('input[type="text"], input:not([type]), textarea'))
           .filter((el) => isVisible(el) && !el.disabled && !el.readOnly);
-        let headInput = inputs.find((el) => {
-          const meta = `${el.placeholder || ''} ${el.name || ''} ${el.id || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
-          return meta.includes('head') || meta.includes('description') || meta.includes('subhead');
+        const headInput = inputs.find((el) => {
+          const meta = `${el.placeholder || ''} ${el.name || ''} ${el.id || ''}`.toLowerCase();
+          return meta.includes('analysis') || meta.includes('rate') || meta.includes('head') || meta.includes('desc');
         }) || inputs[0];
 
         if (!headInput) {
-          return { ok: false, message: 'Heading input box not found on current page. Make sure an empty/draft SECURE estimate is open.' };
+          return { ok: false, message: 'Heading text box not found inside Add Appendix/Description dialog.' };
         }
 
         setNativeValue(headInput, headingText);
         await sleep(250);
 
-        // 3. Click Add / Save button in modal or form
-        const modal = headInput.closest('.modal, .modal-content, .card, form') || document;
-        const saveBtn = findButtonByText([/^add$/i, /save/i, /submit/i, /add\s*heading/i], modal) || findButtonByText([/^add$/i, /save/i]);
-        if (!saveBtn) {
-          return { ok: false, message: 'Add/Save button for Heading not found.' };
+        const addBtn = findButtonByText([/^add$/i, /save/i, /submit/i], modal);
+        if (!addBtn) {
+          return { ok: false, message: '"Add" button not found inside Add Appendix/Description dialog.' };
         }
-        clickEl(saveBtn);
-        await waitForPortalIdle(850, 20000);
+        clickEl(addBtn);
+        await waitForPortalIdle(950, 20000);
         dismissSwalIfAny();
+        blurKeyboard();
         return { ok: true, message: `Added heading: ${headingText}` };
       }
 
@@ -181,21 +257,22 @@ enum SecureAutomationJS {
         dismissSwalIfAny();
         const cards = findHeadingCards();
         const targetCard = cards[headingIndex] || cards[cards.length - 1];
-        if (targetCard) {
-          const plusBtn = targetCard.querySelector('button[title*="Add"], a[title*="Add"], .fa-plus, .fa-plus-circle, .bi-plus')?.closest('button, a')
-            || targetCard.querySelector('.fa-plus, .fa-plus-circle');
-          if (plusBtn && isVisible(plusBtn)) {
-            clickEl(plusBtn);
-            await waitForPortalIdle(600, 15000);
-          }
+        if (!targetCard) {
+          return { ok: false, message: `Heading #${headingIndex + 1} card not found in left panel.` };
         }
 
-        // 1. Select Sub Head Type (<select>)
+        const plusBtn = targetCard.querySelector('button[title*="Add"], a[title*="Add"], .fa-plus, .fa-plus-circle, .bi-plus')?.closest('button, a')
+          || targetCard.querySelector('.fa-plus, .fa-plus-circle, button');
+        if (plusBtn && isVisible(plusBtn)) {
+          clickEl(plusBtn);
+          await waitForPortalIdle(700, 15000);
+        }
+
         const selects = Array.from(document.querySelectorAll('select')).filter((s) => isVisible(s) && !s.disabled);
         const subheadSelect = selects.find((s) => {
           const txt = Array.from(s.options).map((o) => o.text).join(' ').toLowerCase();
           return txt.includes('sub head') || txt.includes('mgnrega') || txt.includes('54 -');
-        }) || selects[0];
+        });
 
         if (subheadSelect) {
           const chapter = String(code).split('.')[0].trim();
@@ -203,35 +280,31 @@ enum SecureAutomationJS {
           for (const opt of Array.from(subheadSelect.options)) {
             const t = (opt.text || '').trim();
             if (isTM && t.toUpperCase().includes('54') && t.toUpperCase().includes('TM')) {
-              chosen = opt;
-              break;
+              chosen = opt; break;
             }
             if (!isTM && chapter === '54' && t.toUpperCase().includes('54') && !t.toUpperCase().includes('TM') && t.toLowerCase().includes('bihar')) {
-              chosen = opt;
-              break;
+              chosen = opt; break;
             }
             if (chapter !== '54' && t.startsWith(chapter)) {
-              chosen = opt;
-              break;
+              chosen = opt; break;
             }
           }
           if (chosen) {
             subheadSelect.value = chosen.value;
             subheadSelect.dispatchEvent(new Event('change', { bubbles: true }));
-            await waitForPortalIdle(700, 15000);
+            await waitForPortalIdle(750, 15000);
           }
         }
 
-        // 2. Search Specification / Activity code
         const searchInputs = Array.from(document.querySelectorAll('input[type="text"], input[type="search"], input:not([type])'))
-          .filter((el) => isVisible(el) && !el.disabled);
+          .filter((el) => isVisible(el) && !el.disabled && el.getBoundingClientRect().top > 120);
         const searchBox = searchInputs.find((el) => {
           const meta = `${el.placeholder || ''} ${el.name || ''} ${el.id || ''}`.toLowerCase();
           return meta.includes('spec') || meta.includes('search') || meta.includes('code') || meta.includes('activity') || meta.includes('item');
-        }) || searchInputs[searchInputs.length - 1];
+        });
 
         if (!searchBox) {
-          return { ok: false, message: `Search input not found for SOR code ${code}` };
+          return { ok: false, message: `Specification/Activity search box not found for ${code}.` };
         }
         setNativeValue(searchBox, code);
         await sleep(250);
@@ -239,20 +312,18 @@ enum SecureAutomationJS {
         const searchBtn = findButtonByText([/search/i, /find/i, /go/i]);
         if (searchBtn) {
           clickEl(searchBtn);
-          await waitForPortalIdle(750, 15000);
+          await waitForPortalIdle(800, 15000);
         }
 
-        // 3. Find matching result checkbox
         const rows = Array.from(document.querySelectorAll('tr, .list-group-item, .search-result-row')).filter(isVisible);
         const codeUpper = String(code).trim().toUpperCase();
-        let matchedRow = rows.find((r) => (r.innerText || '').toUpperCase().includes(codeUpper) && r.querySelector('input[type="checkbox"]'));
+        const matchedRow = rows.find((r) => (r.innerText || '').toUpperCase().includes(codeUpper) && r.querySelector('input[type="checkbox"]'));
 
         if (!matchedRow) {
-          // SECURE hides codes already present in the heading -> cancel cleanly so next step proceeds
           const cancelBtn = findButtonByText([/cancel/i, /close/i]);
           if (cancelBtn) clickEl(cancelBtn);
           await sleep(300);
-          return { ok: true, skipped: true, message: `Code ${code} not in search results (likely already present in heading). Closed search cleanly.` };
+          return { ok: true, skipped: true, message: `Code ${code} not in search results (already in heading). Closed search cleanly.` };
         }
 
         const chk = matchedRow.querySelector('input[type="checkbox"]');
@@ -263,42 +334,41 @@ enum SecureAutomationJS {
 
         const saveSpecBtn = findButtonByText([/save/i, /add\s*selected/i, /add\s*item/i, /submit/i]);
         if (!saveSpecBtn) {
-          return { ok: false, message: `Save button not found after selecting ${code}` };
+          return { ok: false, message: `Save button not found after selecting ${code}.` };
         }
         clickEl(saveSpecBtn);
-        await waitForPortalIdle(950, 20000);
+        await waitForPortalIdle(1000, 20000);
         dismissSwalIfAny();
+        blurKeyboard();
         return { ok: true, message: `Added SOR item ${code}` };
       }
 
       async function fillMeasurements(headingIndex, code, rowsData) {
         dismissSwalIfAny();
-        // Expand heading if collapsed and click item matching code (or ₹ 0 unfilled item)
         const cards = findHeadingCards();
         const card = cards[headingIndex] || cards[cards.length - 1];
-        if (card) {
-          const headerToggle = card.querySelector('[data-bs-toggle="collapse"], [data-toggle="collapse"], .accordion-button, .card-header');
-          if (headerToggle && isVisible(headerToggle)) {
-            const expanded = headerToggle.getAttribute('aria-expanded');
-            if (expanded === 'false') {
-              clickEl(headerToggle);
-              await sleep(450);
-            }
-          }
-          const codeUpper = String(code).toUpperCase();
-          const itemNodes = Array.from(card.querySelectorAll('tr, li, .item-row, div')).filter(isVisible);
-          let targetItem = itemNodes.find((n) => (n.innerText || '').toUpperCase().includes(codeUpper));
-          if (!targetItem) {
-            targetItem = itemNodes.find((n) => (n.innerText || '').includes('₹ 0') || (n.innerText || '').includes('0.00'));
-          }
-          if (targetItem) {
-            const measBtn = targetItem.querySelector('button[title*="Meas"], a[title*="Meas"], .fa-plus, .fa-calculator, .fa-edit') || targetItem;
-            clickEl(measBtn);
-            await waitForPortalIdle(700, 15000);
-          }
+        if (!card) {
+          return { ok: false, message: `Heading #${headingIndex + 1} not found for measurements of ${code}.` };
         }
 
-        // Fill each measurement row
+        const headerToggle = card.querySelector('[data-bs-toggle="collapse"], [data-toggle="collapse"], .accordion-button, .card-header');
+        if (headerToggle && isVisible(headerToggle) && headerToggle.getAttribute('aria-expanded') === 'false') {
+          clickEl(headerToggle);
+          await sleep(450);
+        }
+
+        const codeUpper = String(code).toUpperCase();
+        const itemNodes = Array.from(card.querySelectorAll('tr, li, .item-row, div')).filter(isVisible);
+        let targetItem = itemNodes.find((n) => (n.innerText || '').toUpperCase().includes(codeUpper));
+        if (!targetItem) {
+          targetItem = itemNodes.find((n) => (n.innerText || '').includes('₹ 0') || (n.innerText || '').includes('0.00'));
+        }
+        if (targetItem) {
+          const measBtn = targetItem.querySelector('button[title*="Meas"], a[title*="Meas"], .fa-plus, .fa-calculator, .fa-edit') || targetItem;
+          clickEl(measBtn);
+          await waitForPortalIdle(750, 15000);
+        }
+
         for (let rIdx = 0; rIdx < rowsData.length; rIdx++) {
           const row = rowsData[rIdx];
           if (rIdx > 0 || row.isDeduction) {
@@ -311,18 +381,16 @@ enum SecureAutomationJS {
             }
           }
 
-          // Locate editable measurement table rows on right panel
           const trs = Array.from(document.querySelectorAll('table tbody tr')).filter((tr) => {
             return isVisible(tr) && tr.querySelectorAll('input:not([type="hidden"]):not([type="checkbox"])').length >= 3;
           });
           const targetTr = trs[trs.length - 1];
           if (!targetTr) {
-            return { ok: false, message: `Measurement input row not found for ${code} (row ${rIdx + 1})` };
+            return { ok: false, message: `Measurement input row not found for ${code} (row ${rIdx + 1}).` };
           }
           const inputs = Array.from(targetTr.querySelectorAll('input:not([type="hidden"]):not([type="checkbox"]), textarea'))
             .filter((el) => isVisible(el) && !el.disabled && !el.readOnly);
 
-          // Standard SECURE column order: [Description, No, L/D/A, B/B, D/C, Cf]
           const values = [row.desc || '', row.no || '1', row.l || '', row.b || '', row.d || '', row.cf || ''];
           for (let ci = 0; ci < Math.min(inputs.length, values.length); ci++) {
             if (values[ci] !== '') {
@@ -334,41 +402,47 @@ enum SecureAutomationJS {
 
         const saveBtn = findButtonByText([/save\s*measurement/i, /^save$/i, /update/i]);
         if (!saveBtn) {
-          return { ok: false, message: `Save Measurements button not found for ${code}` };
+          return { ok: false, message: `Save Measurements button not found for ${code}.` };
         }
         clickEl(saveBtn);
         await waitForPortalIdle(1000, 20000);
         dismissSwalIfAny();
+        blurKeyboard();
         return { ok: true, message: `Saved ${rowsData.length} measurement row(s) for ${code}` };
       }
 
       async function addLumpSum(keyword, customDesc, amount) {
         dismissSwalIfAny();
-        // Rule from v3.0.10: Must tick the LOWER 'Lump sum Type' checkbox (NOT the upper Heading checkbox)
-        const checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"]')).filter(isVisible);
+        const modal = await openAddAppendixModal();
+        if (!modal) {
+          return { ok: false, message: 'Could not open Add Appendix/Description dialog for Lump Sum.' };
+        }
+
+        // Must tick the LOWER "Lump sum Type" checkbox (NOT upper "Heading / Description")
+        const checkboxes = Array.from(modal.querySelectorAll('input[type="checkbox"]'))
+          .filter(isVisible)
+          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+
         let lumpChk = checkboxes.find((cb) => {
           const labelTxt = (cb.closest('label')?.innerText || cb.parentElement?.innerText || '').toLowerCase();
           return labelTxt.includes('lump') && !labelTxt.includes('heading');
-        });
-        if (!lumpChk && checkboxes.length >= 2) {
-          // Pick the lower checkbox on screen
-          lumpChk = checkboxes.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[checkboxes.length - 1];
-        }
+        }) || (checkboxes.length >= 2 ? checkboxes[checkboxes.length - 1] : checkboxes[0]);
+
         if (lumpChk && !lumpChk.checked) {
           clickEl(lumpChk);
           await sleep(450);
         }
 
-        // Select '-- Select Lump sum Type --' dropdown
-        const selects = Array.from(document.querySelectorAll('select')).filter((s) => isVisible(s) && !s.disabled);
+        const selects = Array.from(modal.querySelectorAll('select')).filter((s) => isVisible(s) && !s.disabled);
         const lumpSelect = selects.find((s) => {
           const txt = Array.from(s.options).map((o) => o.text).join(' ').toLowerCase();
           return txt.includes('lump') || txt.includes('conveyance') || txt.includes('miscellaneous') || txt.includes('display board');
-        });
+        }) || selects[0];
 
         if (!lumpSelect) {
-          return { ok: false, message: 'Lump sum Type dropdown not found.' };
+          return { ok: false, message: 'Lump sum Type dropdown not found in dialog.' };
         }
+
         const kwLow = String(keyword || 'Miscellaneous').toLowerCase();
         const opt = Array.from(lumpSelect.options).find((o) => (o.text || '').toLowerCase().includes(kwLow))
           || Array.from(lumpSelect.options).find((o) => (o.text || '').toLowerCase().includes('miscellaneous'));
@@ -378,12 +452,12 @@ enum SecureAutomationJS {
           await sleep(500);
         }
 
-        // Rule from v3.0.10: Selecting options like 'Conveyance - M' hides 'Lump sum description' -> only fill if visible & enabled
-        const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"], textarea'))
+        // Skip Lump sum description if hidden/disabled (e.g. Conveyance - M)
+        const inputs = Array.from(modal.querySelectorAll('input[type="text"], input[type="number"], input:not([type]), textarea'))
           .filter((el) => isVisible(el) && !el.disabled && !el.readOnly);
         const descInput = inputs.find((el) => {
           const meta = `${el.placeholder || ''} ${el.name || ''} ${el.id || ''}`.toLowerCase();
-          return meta.includes('desc') && !meta.includes('head');
+          return meta.includes('desc') && !meta.includes('head') && !meta.includes('analysis');
         });
         if (descInput && customDesc) {
           setNativeValue(descInput, customDesc);
@@ -396,18 +470,19 @@ enum SecureAutomationJS {
         }) || inputs[inputs.length - 1];
 
         if (!amtInput) {
-          return { ok: false, message: 'Lump sum amount input not found.' };
+          return { ok: false, message: 'Lump sum amount input not found in dialog.' };
         }
         setNativeValue(amtInput, String(amount));
         await sleep(200);
 
-        const saveBtn = findButtonByText([/add\s*lump/i, /save/i, /^add$/i]);
+        const saveBtn = findButtonByText([/^add$/i, /add\s*lump/i, /save/i], modal);
         if (!saveBtn) {
-          return { ok: false, message: 'Save/Add button for Lump Sum not found.' };
+          return { ok: false, message: '"Add" button not found for Lump Sum.' };
         }
         clickEl(saveBtn);
-        await waitForPortalIdle(900, 20000);
+        await waitForPortalIdle(950, 20000);
         dismissSwalIfAny();
+        blurKeyboard();
         return { ok: true, message: `Added Lump Sum: ${keyword} (₹${amount})` };
       }
 
@@ -417,7 +492,7 @@ enum SecureAutomationJS {
           const titleEl = card.querySelector('.card-header, .accordion-button, h5, h6, strong, .heading-title') || card;
           const rawTitle = (titleEl.innerText || '').split('\n')[0].trim();
           const items = [];
-          const codeRe = /\b(\d{1,2}(?:\.TM)?(?:\.\d+[A-Za-z]?){1,5})\b/gi;
+          const codeRe = /\b(\d{1,2}(?:\.TM)?(?:\.[A-Za-z0-9]+){2,6})\b/gi;
           const text = card.innerText || '';
           const seen = new Set();
           let m;
@@ -465,6 +540,7 @@ enum SecureAutomationJS {
         confirmSwalDelete,
         isPortalLoading
       };
+      window.__SECURE_AI_IPAD_V2__ = true;
     })();
     """#
 }

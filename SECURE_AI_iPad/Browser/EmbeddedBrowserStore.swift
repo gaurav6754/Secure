@@ -27,7 +27,7 @@ final class EmbeddedBrowserStore: ObservableObject {
     }
     @Published var zoomLevel: Double {
         didSet {
-            UserDefaults.standard.set(zoomLevel, forKey: "secure_ai_browser_zoom_v2")
+            UserDefaults.standard.set(zoomLevel, forKey: "secure_ai_browser_zoom_v3")
             applyZoom()
         }
     }
@@ -37,12 +37,12 @@ final class EmbeddedBrowserStore: ObservableObject {
     static let desktopUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
 
     init() {
-        let saved = UserDefaults.standard.double(forKey: "secure_ai_browser_zoom_v2")
-        self.zoomLevel = (saved >= 0.45 && saved <= 1.25) ? saved : 0.75
+        let saved = UserDefaults.standard.double(forKey: "secure_ai_browser_zoom_v3")
+        self.zoomLevel = (saved >= 0.50 && saved <= 1.25) ? saved : 0.80
     }
 
     func zoomOut() {
-        zoomLevel = max(0.45, (zoomLevel - 0.05).roundedToTwo)
+        zoomLevel = max(0.50, (zoomLevel - 0.05).roundedToTwo)
     }
 
     func zoomIn() {
@@ -50,19 +50,28 @@ final class EmbeddedBrowserStore: ObservableObject {
     }
 
     func resetZoom() {
-        zoomLevel = 0.75
+        zoomLevel = 0.80
     }
 
-    /// Uses CSS `document.documentElement.style.zoom` while keeping `webView.pageZoom = 1.0`.
-    /// On iPadOS, shrinking `webView.pageZoom` causes `position: fixed` modals (like SECURE Login) to expand in reverse.
+    /// Fits SECURE v2 edge-to-edge like a real 1280px+ laptop screen with zero blank right margin.
+    /// Lower zoom % widens the virtual desktop viewport so more content fits edge-to-edge cleanly.
     func applyZoom() {
         guard let wv = webView else { return }
         wv.pageZoom = 1.0
-        let pct = Int(round(zoomLevel * 100))
+        let virtualWidth = Int(round(980.0 / max(0.50, zoomLevel)))
         let js = """
         (function() {
           if (document && document.documentElement) {
-            window.__SECURE_ZOOM_PCT__ = \(pct); document.documentElement.style.zoom = '\(pct)%';
+            document.documentElement.style.zoom = '';
+          }
+          var meta = document.querySelector('meta[name="viewport"]');
+          if (!meta) {
+            meta = document.createElement('meta');
+            meta.name = 'viewport';
+            document.head && document.head.appendChild(meta);
+          }
+          if (meta) {
+            meta.setAttribute('content', 'width=\(virtualWidth), initial-scale=1.0, maximum-scale=3.0, user-scalable=yes');
           }
         })();
         """
