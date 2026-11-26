@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V5__) return;
+      if (window.__SECURE_AI_IPAD_V7__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -126,7 +126,11 @@ enum SecureAutomationJS {
         el.dispatchEvent(new MouseEvent('mousedown', opts));
         el.dispatchEvent(new MouseEvent('mouseup', opts));
         try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch (_) {}
-        el.click();
+        if (typeof el.click === 'function') {
+          el.click();
+        } else {
+          el.dispatchEvent(new MouseEvent('click', opts));
+        }
         return true;
       }
 
@@ -230,10 +234,12 @@ enum SecureAutomationJS {
         let bestArea = Infinity;
         for (const el of queryAllAcrossDocs('div, form, section, .card, .modal-content')) {
           if (!isVisible(el)) continue;
-          const txt = el.innerText || '';
-          if (txt.includes('Add Appendix/Description') && (txt.includes('Heading / Description') || txt.includes('Lump sum Type'))) {
-            const hasAdd = !!findButtonByText([/^add$/i], el);
-            const hasChk = el.querySelectorAll('input[type="checkbox"]').length >= 1;
+          const txt = (el.innerText || '').toLowerCase();
+          if ((txt.includes('add appendix') || txt.includes('appendix/description')) &&
+              (txt.includes('heading') || txt.includes('lump sum') || txt.includes('lumpsum'))) {
+            const hasAdd = !!findButtonByText([/^add$/i, /^save$/i, /add\s*appendix/i], el);
+            const hasChk = el.querySelectorAll('input[type="checkbox"], [role="checkbox"], mat-checkbox').length >= 1
+                        || el.querySelectorAll('input[type="text"], textarea, select').length >= 1;
             if (hasAdd && hasChk) {
               const r = el.getBoundingClientRect();
               const area = r.width * r.height;
@@ -271,7 +277,10 @@ enum SecureAutomationJS {
           const r = el.getBoundingClientRect();
           if (r.top >= minY && r.bottom <= maxY && r.left >= 10 && r.right <= maxX) {
             if (r.width >= 14 && r.width <= 96 && r.height >= 14 && r.height <= 74) {
-              const isIcon = ['IMG', 'SVG', 'I', 'MAT-ICON'].includes(el.tagName) || (['BUTTON', 'A'].includes(el.tagName) && el.querySelector('img, svg, i, mat-icon'));
+              const win = el.ownerDocument?.defaultView || window;
+              const isIcon = ['IMG', 'SVG', 'I', 'MAT-ICON', 'BUTTON', 'A', 'FA-ICON'].includes(el.tagName)
+                || el.getAttribute('role') === 'button'
+                || win.getComputedStyle(el).cursor === 'pointer';
               if (!isIcon) continue;
               const meta = `${el.className || ''} ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
               if (meta.includes('expand') || meta.includes('full')) continue;
@@ -294,6 +303,35 @@ enum SecureAutomationJS {
             await sleep(160);
             form = findActiveAppendixForm();
             if (form) return form;
+          }
+        }
+        // Direct coordinate probe (PC-style click on the stacked-layers + bar below LMR Location)
+        const probeXs = [vw * 0.21, vw * 0.19, vw * 0.23];
+        if (lmrRect) {
+          probeXs.push(lmrRect.left + 185, lmrRect.left + 215);
+        }
+        const probeBase = lmrRect ? lmrRect.bottom : 165;
+        const probeYs = [probeBase + 38, probeBase + 52, probeBase + 26, probeBase + 66, probeBase + 80];
+        for (const doc of getAllDocs()) {
+          for (const py of probeYs) {
+            for (const px of probeXs) {
+              let hit = null;
+              try { hit = doc.elementFromPoint(px, py); } catch (_) {}
+              if (!hit) continue;
+              const chain = [hit, hit.parentElement, hit.parentElement?.parentElement, hit.closest?.('button, a, [role="button"], div')].filter(Boolean);
+              for (const node of chain) {
+                if (tried.has(node)) continue;
+                const nr = node.getBoundingClientRect();
+                if (nr.width > vw * 0.46 || nr.height > 120) continue;
+                tried.add(node);
+                await clickEl(node);
+                for (let w = 0; w < 6; w++) {
+                  await sleep(150);
+                  form = findActiveAppendixForm();
+                  if (form) return form;
+                }
+              }
+            }
           }
         }
         return null;
@@ -349,18 +387,22 @@ enum SecureAutomationJS {
       function findAddItemButtonInRow(row) {
         if (!row) return null;
         const rowRect = row.getBoundingClientRect();
-        const explicitPlus = row.querySelector('.fa-plus, .fa-plus-circle, .bi-plus, .bi-plus-circle, [title*="Add"], [aria-label*="Add"]');
+        const explicitPlus = row.querySelector('.fa-plus, .fa-plus-circle, .fa-circle-plus, .bi-plus, .bi-plus-circle, [title*="Add" i], [aria-label*="Add" i], [title*="Spec" i]');
         if (explicitPlus && isVisible(explicitPlus)) {
           return explicitPlus.closest('button, a, [role="button"]') || explicitPlus;
         }
-        const icons = Array.from(row.querySelectorAll('button, a, svg, i, img, mat-icon'))
+        const icons = Array.from(row.querySelectorAll('button, a, svg, i, img, mat-icon, span, [role="button"]'))
           .filter((el) => {
             if (!isVisible(el)) return false;
             const r = el.getBoundingClientRect();
             const isSmallIcon = r.width >= 10 && r.width <= 48 && r.height >= 10 && r.height <= 48;
-            const meta = `${el.className || ''} ${el.getAttribute('title') || ''}`.toLowerCase();
-            if (meta.includes('info') || meta.includes('trash') || meta.includes('delete') || meta.includes('edit') || meta.includes('pencil')) return false;
-            return isSmallIcon && r.left > (rowRect.left + rowRect.width * 0.42);
+            if (!isSmallIcon) return false;
+            const win = el.ownerDocument?.defaultView || window;
+            const clickable = ['BUTTON', 'A', 'SVG', 'I', 'IMG', 'MAT-ICON'].includes(el.tagName) || win.getComputedStyle(el).cursor === 'pointer';
+            if (!clickable) return false;
+            const meta = `${typeof el.className === 'string' ? el.className : ''} ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
+            if (meta.includes('info') || meta.includes('exclamation') || meta.includes('trash') || meta.includes('delete') || meta.includes('edit') || meta.includes('pencil') || meta.includes('chevron') || meta.includes('angle') || meta.includes('caret')) return false;
+            return r.left > (rowRect.left + rowRect.width * 0.43) && r.left < (rowRect.left + rowRect.width * 0.82);
           })
           .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
 
@@ -704,7 +746,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V5__ = true;
+      window.__SECURE_AI_IPAD_V7__ = true;
     })();
     """#
 }
