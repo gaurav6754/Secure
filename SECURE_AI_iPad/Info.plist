@@ -19,22 +19,28 @@
     <key>CFBundleShortVersionString</key>
     <string>3.0.10</string>
     <key>CFBundleVersion</key>
-    <string>3010</string>
+    <string>3012</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
+    <key>UIRequiresFullScreen</key>
+    <false/>
     <key>UIApplicationSceneManifest</key>
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key>
         <true/>
     </dict>
     <key>UILaunchScreen</key>
-    <dict>
-        <key>UIColorName</key>
-        <string>AccentColor</string>
-    </dict>
+    <dict/>
     <key>UIRequiredDeviceCapabilities</key>
     <array>
         <string>arm64</string>
+    </array>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationPortraitUpsideDown</string>
     </array>
     <key>UISupportedInterfaceOrientations~ipad</key>
     <array>

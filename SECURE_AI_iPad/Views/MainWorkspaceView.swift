@@ -149,6 +149,7 @@ struct MainWorkspaceView: View {
                 case .pdf:
                     PDFImportView(
                         onStartRequested: {
+                            withAnimation(.easeInOut(duration: 0.2)) { showSidebar = false }
                             automation.startAutomation(browser: browser)
                         },
                         onSendScannedPDFToAI: { att in
@@ -188,7 +189,14 @@ struct MainWorkspaceView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(pal.fg)
                     .lineLimit(1)
-                    .frame(maxWidth: 220, alignment: .leading)
+                    .frame(maxWidth: 240, alignment: .leading)
+                if let err = automation.lastErrorBanner {
+                    Text(err)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundColor(SecureTheme.amber)
+                        .lineLimit(2)
+                        .frame(maxWidth: 240, alignment: .leading)
+                }
             }
 
             Button {

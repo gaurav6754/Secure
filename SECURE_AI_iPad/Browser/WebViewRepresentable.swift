@@ -25,27 +25,7 @@ struct WebViewRepresentable: UIViewRepresentable {
         )
         userContent.addUserScript(script)
 
-        // Persist CSS zoom smoothly across SPA route transitions in SECURE v2
-        let pct = Int(round(store.zoomLevel * 100))
-        let zoomInitScript = WKUserScript(
-            source: """
-            (function() {
-              window.__SECURE_ZOOM_PCT__ = \(pct);
-              function applyZ() {
-                if (document && document.documentElement) {
-                  document.documentElement.style.zoom = (window.__SECURE_ZOOM_PCT__ || \(pct)) + '%';
-                }
-              }
-              applyZ();
-              window.addEventListener('hashchange', applyZ);
-              window.addEventListener('popstate', applyZ);
-            })();
-            """,
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: true
-        )
-        userContent.addUserScript(zoomInitScript)
-        config.userContentController = userContent
+                config.userContentController = userContent
 
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
