@@ -1,0 +1,50 @@
+name: SECURE_AI_iPad
+options:
+  bundleIdPrefix: com.secureai.ipad
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "2"
+    SUPPORTS_MACCATALYST: NO
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+targets:
+  SECURE_AI_iPad:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: SECURE_AI_iPad/App
+      - path: SECURE_AI_iPad/Models
+      - path: SECURE_AI_iPad/Services
+      - path: SECURE_AI_iPad/Browser
+      - path: SECURE_AI_iPad/Views
+      - path: SECURE_AI_iPad/Resources
+        buildPhase: resources
+    info:
+      path: SECURE_AI_iPad/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.secureai.ipad.pro
+        PRODUCT_NAME: SECURE_AI_iPad
+        INFOPLIST_FILE: SECURE_AI_iPad/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: "3.0.10"
+        CURRENT_PROJECT_VERSION: "3011"
+    frameworks:
+      - sdk: WebKit.framework
+      - sdk: PDFKit.framework
+      - sdk: Speech.framework
+      - sdk: AVFoundation.framework
+      - sdk: Network.framework
+      - sdk: CryptoKit.framework
+schemes:
+  SECURE_AI_iPad:
+    build:
+      targets:
+        SECURE_AI_iPad: all
+    archive:
+      config: Release

@@ -1,0 +1,47 @@
+name: Build SECURE AI iPad IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build Unsigned Release App for iPadOS (arm64)
+        run: |
+          xcodebuild \
+            -project SECURE_AI_iPad.xcodeproj \
+            -scheme SECURE_AI_iPad \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package .ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/SECURE_AI_iPad.app Payload/
+          zip -r SECURE_AI_iPad_v3.0.10.ipa Payload
+          ls -lh SECURE_AI_iPad_v3.0.10.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SECURE_AI_iPad_v3.0.10_IPA
+          path: SECURE_AI_iPad_v3.0.10.ipa
+          retention-days: 30

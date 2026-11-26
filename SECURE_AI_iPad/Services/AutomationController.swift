@@ -1,0 +1,331 @@
+import Foundation
+
+@MainActor
+final class AutomationController: ObservableObject {
+    @Published var activeEstimate: EstimateDocument? = nil
+    @Published var isVerifiedByUser: Bool = false
+    @Published var speed: SpeedPreset = .x2
+
+    @Published var isRunning: Bool = false
+    @Published var isPaused: Bool = false
+    @Published var currentStepLabel: String = "Idle"
+    @Published var completedSteps: Int = 0
+    @Published var totalSteps: Int = 0
+    @Published var logs: [String] = []
+    @Published var mismatches: [VerifyMismatch] = []
+
+    private var runTask: Task<Void, Never>? = nil
+    private var stopRequested: Bool = false
+
+    func appendLog(_ message: String) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        let line = "[\(formatter.string(from: Date()))] \(message)"
+        logs.insert(line, at: 0)
+        if logs.count > 250 { logs.removeLast() }
+    }
+
+    func buildUnits(from est: EstimateDocument) -> [AutomationUnit] {
+        var units: [AutomationUnit] = []
+        for (hi, heading) in est.headings.enumerated() {
+            units.append(AutomationUnit(
+                id: "H\(hi)",
+                kind: .addHeading,
+                label: "Heading \(hi + 1): \(heading.text.prefix(38))",
+                headingIndex: hi,
+                itemIndex: nil,
+                headingText: heading.text,
+                item: nil,
+                lumpSum: nil
+            ))
+            for (ii, item) in heading.items.enumerated() {
+                units.append(AutomationUnit(
+                    id: "S\(hi).\(ii)",
+                    kind: .addItem,
+                    label: "Add Item \(hi + 1).\(ii + 1): \(item.code)",
+                    headingIndex: hi,
+                    itemIndex: ii,
+                    headingText: heading.text,
+                    item: item,
+                    lumpSum: nil
+                ))
+                if !item.measurements.isEmpty {
+                    units.append(AutomationUnit(
+                        id: "M\(hi).\(ii)",
+                        kind: .fillMeasurements,
+                        label: "Measurements \(hi + 1).\(ii + 1): \(item.code) (\(item.measurements.count) rows)",
+                        headingIndex: hi,
+                        itemIndex: ii,
+                        headingText: heading.text,
+                        item: item,
+                        lumpSum: nil
+                    ))
+                }
+            }
+        }
+        for (li, ls) in est.lumpSums.enumerated() {
+            units.append(AutomationUnit(
+                id: "L\(li)",
+                kind: .addLumpSum,
+                label: "Lump Sum \(li + 1): \(ls.description.isEmpty ? ls.type : ls.description) (₹\(ls.amount))",
+                headingIndex: -1,
+                itemIndex: li,
+                headingText: nil,
+                item: nil,
+                lumpSum: ls
+            ))
+        }
+        return units
+    }
+
+    func startAutomation(browser: EmbeddedBrowserStore) {
+        guard let est = activeEstimate else {
+            appendLog("No estimate loaded. Import a PDF or generate via 100% AI first.")
+            return
+        }
+        let units = buildUnits(from: est)
+        runUnits(units, browser: browser, title: "Estimate Entry")
+    }
+
+    func runRepairUnits(browser: EmbeddedBrowserStore) {
+        let allRepair = mismatches.flatMap { $0.repairUnits }
+        guard !allRepair.isEmpty else {
+            appendLog("No repair actions queued.")
+            return
+        }
+        runUnits(allRepair, browser: browser, title: "Verify & Fix Repair (Delete + Re-Add)")
+    }
+
+    private func runUnits(_ units: [AutomationUnit], browser: EmbeddedBrowserStore, title: String) {
+        stop()
+        guard !units.isEmpty else { return }
+
+        isRunning = true
+        isPaused = false
+        stopRequested = false
+        completedSteps = 0
+        totalSteps = units.count
+        appendLog("Started \(title) (\(units.count) steps at \(speed.rawValue))")
+
+        runTask = Task { @MainActor in
+            for unit in units {
+                if stopRequested { break }
+                while isPaused && !stopRequested {
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+                if stopRequested { break }
+
+                currentStepLabel = unit.label
+                appendLog("▶ \(unit.label)")
+
+                do {
+                    let result = try await execute(unit: unit, browser: browser)
+                    appendLog("✓ \(result)")
+                } catch {
+                    appendLog("⚠ \(unit.label) failed: \(error.localizedDescription)")
+                }
+
+                completedSteps += 1
+                // Scaled inter-step pacing (portal mutation waits inside JS remain wall-clock safe)
+                let baseDelayMs = 450.0 / speed.multiplier
+                try? await Task.sleep(nanoseconds: UInt64(max(80.0, baseDelayMs) * 1_000_000))
+            }
+
+            isRunning = false
+            isPaused = false
+            currentStepLabel = stopRequested ? "Stopped by user" : "Completed \(completedSteps)/\(totalSteps)"
+            appendLog(stopRequested ? "■ Automation stopped." : "✅ Finished \(title)!")
+        }
+    }
+
+    func togglePause() {
+        guard isRunning else { return }
+        isPaused.toggle()
+        appendLog(isPaused ? "⏸ Paused" : "▶ Resumed")
+    }
+
+    func stop() {
+        stopRequested = true
+        runTask?.cancel()
+        runTask = nil
+        isRunning = false
+        isPaused = false
+    }
+
+    /// Scrapes the live SECURE draft page inside WKWebView and compares against `activeEstimate`.
+    /// Builds Delete + Re-Add repair units matching SECURE AI v3.0.10's Verify & Fix Error rule.
+    func verifyAgainstLivePortal(browser: EmbeddedBrowserStore) async {
+        guard let target = activeEstimate else {
+            appendLog("Load your PDF or AI estimate first before running Verify.")
+            return
+        }
+        appendLog("🔍 Scanning opened SECURE estimate in built-in browser...")
+        do {
+            let raw = try await browser.callAutomationJS("return window.__SECURE_AI_IPAD__.scrapeCurrentEstimate();")
+            guard let dict = raw as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: dict),
+                  let scraped = try? JSONDecoder().decode(PortalScrapedEstimate.self, from: data) else {
+                appendLog("Could not read estimate structure from current web page.")
+                return
+            }
+
+            var found: [VerifyMismatch] = []
+            for (hi, heading) in target.headings.enumerated() {
+                if hi >= scraped.headings.count {
+                    var repair: [AutomationUnit] = [
+                        AutomationUnit(id: "FIX_H\(hi)", kind: .addHeading, label: "Add Missing Heading: \(heading.text)", headingIndex: hi, itemIndex: nil, headingText: heading.text, item: nil, lumpSum: nil)
+                    ]
+                    for (ii, it) in heading.items.enumerated() {
+                        repair.append(AutomationUnit(id: "FIX_S\(hi).\(ii)", kind: .addItem, label: "Add Item \(it.code)", headingIndex: hi, itemIndex: ii, headingText: heading.text, item: it, lumpSum: nil))
+                        if !it.measurements.isEmpty {
+                            repair.append(AutomationUnit(id: "FIX_M\(hi).\(ii)", kind: .fillMeasurements, label: "Fill Measurements \(it.code)", headingIndex: hi, itemIndex: ii, headingText: heading.text, item: it, lumpSum: nil))
+                        }
+                    }
+                    found.append(VerifyMismatch(
+                        category: "Missing Heading",
+                        summary: "Heading \(hi + 1) '\(heading.text)' is missing on SECURE portal.",
+                        headingIndex: hi,
+                        itemIndex: nil,
+                        repairUnits: repair
+                    ))
+                    continue
+                }
+
+                let portalHeading = scraped.headings[hi]
+                let portalCodes = Set(portalHeading.items.map { $0.code.uppercased() })
+                let expectedCodes = Set(heading.items.map { $0.code.uppercased() })
+
+                // Missing items -> Add Item + Fill Measurements
+                for (ii, item) in heading.items.enumerated() where !portalCodes.contains(item.code.uppercased()) {
+                    var repair: [AutomationUnit] = [
+                        AutomationUnit(id: "FIX_ADD_\(hi).\(ii)", kind: .addItem, label: "Add Missing Item \(item.code)", headingIndex: hi, itemIndex: ii, headingText: heading.text, item: item, lumpSum: nil)
+                    ]
+                    if !item.measurements.isEmpty {
+                        repair.append(AutomationUnit(id: "FIX_MEAS_\(hi).\(ii)", kind: .fillMeasurements, label: "Fill Measurements \(item.code)", headingIndex: hi, itemIndex: ii, headingText: heading.text, item: item, lumpSum: nil))
+                    }
+                    found.append(VerifyMismatch(
+                        category: "Missing Item",
+                        summary: "Heading \(hi + 1): Item \(item.code) missing on portal.",
+                        headingIndex: hi,
+                        itemIndex: ii,
+                        repairUnits: repair
+                    ))
+                }
+
+                // Extra / wrong items -> Delete via SweetAlert2
+                for pItem in portalHeading.items where !expectedCodes.contains(pItem.code.uppercased()) {
+                    let delItem = EstimateItem(code: pItem.code, description: pItem.description)
+                    found.append(VerifyMismatch(
+                        category: "Extra Item",
+                        summary: "Heading \(hi + 1): Extra item \(pItem.code) on portal (will delete).",
+                        headingIndex: hi,
+                        itemIndex: nil,
+                        repairUnits: [
+                            AutomationUnit(id: "FIX_DEL_\(hi)_\(pItem.code)", kind: .deleteItem, label: "Delete Extra Item \(pItem.code)", headingIndex: hi, itemIndex: nil, headingText: heading.text, item: delItem, lumpSum: nil)
+                        ]
+                    ))
+                }
+            }
+
+            mismatches = found
+            if found.isEmpty {
+                appendLog("✅ Verify complete: All headings & SOR codes match the opened SECURE draft!")
+            } else {
+                appendLog("⚠ Found \(found.count) mismatch(es). Tap 'Auto-Fix (Delete & Re-Add)' to repair.")
+            }
+        } catch {
+            appendLog("Verify failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func execute(unit: AutomationUnit, browser: EmbeddedBrowserStore) async throws -> String {
+        switch unit.kind {
+        case .addHeading:
+            let res = try await browser.callAutomationJS(
+                "return await window.__SECURE_AI_IPAD__.addHeading(text);",
+                arguments: ["text": unit.headingText ?? "HEADING"]
+            )
+            return extractJSMessage(res)
+
+        case .addItem:
+            guard let item = unit.item else { return "Skipped empty item" }
+            let isTM = item.code.uppercased().contains(".TM.")
+            let res = try await browser.callAutomationJS(
+                "return await window.__SECURE_AI_IPAD__.addItem(hi, code, isTM);",
+                arguments: ["hi": unit.headingIndex, "code": item.code, "isTM": isTM]
+            )
+            return extractJSMessage(res)
+
+        case .fillMeasurements:
+            guard let item = unit.item else { return "Skipped empty measurements" }
+            let rowsArray: [[String: Any]] = item.measurements.map { r in
+                [
+                    "desc": r.desc,
+                    "no": r.no,
+                    "l": r.l,
+                    "b": r.b,
+                    "d": r.d,
+                    "cf": r.cf,
+                    "isDeduction": r.isDeduction
+                ]
+            }
+            let res = try await browser.callAutomationJS(
+                "return await window.__SECURE_AI_IPAD__.fillMeasurements(hi, code, rows);",
+                arguments: ["hi": unit.headingIndex, "code": item.code, "rows": rowsArray]
+            )
+            return extractJSMessage(res)
+
+        case .addLumpSum:
+            guard let ls = unit.lumpSum else { return "Skipped empty lump sum" }
+            let (keyword, customDesc) = mapLumpSumKeyword(ls)
+            let res = try await browser.callAutomationJS(
+                "return await window.__SECURE_AI_IPAD__.addLumpSum(kw, desc, amt);",
+                arguments: ["kw": keyword, "desc": customDesc, "amt": ls.amount]
+            )
+            return extractJSMessage(res)
+
+        case .deleteItem:
+            guard let item = unit.item else { return "Skipped delete" }
+            let res = try await browser.callAutomationJS(
+                "return await window.__SECURE_AI_IPAD__.deleteItemInHeading(hi, code);",
+                arguments: ["hi": unit.headingIndex, "code": item.code]
+            )
+            return extractJSMessage(res)
+
+        case .deleteHeading:
+            return "Delete heading handled"
+        }
+    }
+
+    private func mapLumpSumKeyword(_ ls: LumpSumItem) -> (String, String) {
+        let low = "\(ls.description) \(ls.type)".lowercased()
+        let pairs: [(String, String)] = [
+            ("conveyance", "Conveyance"),
+            ("carriage", "Conveyance"),
+            ("electrification", "Electrification"),
+            ("gst", "GST"),
+            ("bf/t/a", "BF"),
+            ("mate", "BF"),
+            ("cess", "Labour Welfare"),
+            ("welfare", "Labour Welfare"),
+            ("quality", "Quality control"),
+            ("survey", "Quality control"),
+            ("creche", "Worksite"),
+            ("drinking", "Worksite"),
+            ("display", "Display Board"),
+            ("cib", "Display Board"),
+            ("board", "Display Board")
+        ]
+        for (needle, kw) in pairs where low.contains(needle) {
+            return (kw, "")
+        }
+        return ("Miscellaneous", ls.description)
+    }
+
+    private func extractJSMessage(_ raw: Any?) -> String {
+        if let dict = raw as? [String: Any], let msg = dict["message"] as? String {
+            return msg
+        }
+        return "Done"
+    }
+}
