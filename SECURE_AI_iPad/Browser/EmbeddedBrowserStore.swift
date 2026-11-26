@@ -27,23 +27,24 @@ final class EmbeddedBrowserStore: ObservableObject {
     }
     @Published var zoomLevel: Double {
         didSet {
-            UserDefaults.standard.set(zoomLevel, forKey: "secure_ai_browser_zoom_v5")
+            UserDefaults.standard.set(zoomLevel, forKey: "secure_ai_browser_zoom_chrome_v6")
             applyZoom()
         }
     }
 
     weak var webView: WKWebView?
 
-    static let desktopUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
+    // Desktop Chrome/Safari user agent matching iPad Chrome desktop rendering
+    static let desktopUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
     init() {
-        let saved = UserDefaults.standard.double(forKey: "secure_ai_browser_zoom_v5")
-        // Matches Chrome 67% zoom from user's PC setup (shows full SECURE dashboard + work list cleanly)
-        self.zoomLevel = (saved >= 0.45 && saved <= 1.25) ? saved : 0.67
+        let saved = UserDefaults.standard.double(forKey: "secure_ai_browser_zoom_chrome_v6")
+        // Default 100% = Exact Chrome-on-iPad native edge-to-edge layout (zero shrinking or white space)
+        self.zoomLevel = (saved >= 0.70 && saved <= 1.25) ? saved : 1.0
     }
 
     func zoomOut() {
-        zoomLevel = max(0.45, (zoomLevel - 0.05).roundedToTwo)
+        zoomLevel = max(0.70, (zoomLevel - 0.05).roundedToTwo)
     }
 
     func zoomIn() {
@@ -51,35 +52,24 @@ final class EmbeddedBrowserStore: ObservableObject {
     }
 
     func resetZoom() {
-        zoomLevel = 0.67
+        zoomLevel = 1.0
     }
 
-    /// Chrome-exact live zoom using `transform: scale(z)` + `width: (100/z)%` so:
-    /// - 67% zoom renders a 149.25% wide desktop canvas scaled cleanly to 100.0% of the browser pane (zero blank right margin!)
-    /// - Tapping `-` ALWAYS shrinks immediately without page reload
-    /// - Tapping `+` ALWAYS enlarges immediately without page reload
+    /// 100% Chrome-on-iPad Native Rendering:
+    /// At 100% (default), leaves the page completely untouched (no CSS transform, no viewport override)
+    /// so SECURE v2 fills 100% edge-to-edge identically to Chrome on iPad Pro.
     func applyZoom() {
         guard let wv = webView else { return }
-        wv.pageZoom = 1.0
-        let z = zoomLevel
-        let invPct = String(format: "%.3f", 100.0 / z)
-        let scaleStr = String(format: "%.3f", z)
+        wv.pageZoom = zoomLevel
         let js = """
         (function() {
           var el = document.documentElement;
           if (!el) return;
+          el.style.transform = '';
+          el.style.transformOrigin = '';
+          el.style.width = '';
+          el.style.height = '';
           el.style.zoom = '';
-          if (Math.abs(\(scaleStr) - 1.0) < 0.01) {
-            el.style.transform = '';
-            el.style.transformOrigin = '';
-            el.style.width = '';
-            el.style.height = '';
-          } else {
-            el.style.transformOrigin = '0 0';
-            el.style.transform = 'scale(\(scaleStr))';
-            el.style.width = '\(invPct)%';
-            el.style.height = '\(invPct)%';
-          }
         })();
         """
         wv.evaluateJavaScript(js, completionHandler: nil)
@@ -130,7 +120,7 @@ final class EmbeddedBrowserStore: ObservableObject {
         guard let wv = webView else { return }
         wv.customUserAgent = desktopMode ? Self.desktopUserAgent : nil
         wv.configuration.defaultWebpagePreferences.preferredContentMode = desktopMode ? .desktop : .mobile
-        wv.pageZoom = 1.0
+        wv.pageZoom = zoomLevel
         wv.reload()
     }
 

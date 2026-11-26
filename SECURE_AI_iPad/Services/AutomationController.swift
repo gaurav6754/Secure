@@ -274,8 +274,8 @@ final class AutomationController: ObservableObject {
             guard let item = unit.item else { return (true, "Skipped empty item") }
             let isTM = item.code.uppercased().contains(".TM.")
             let res = try await browser.callAutomationJS(
-                "return await window.__SECURE_AI_IPAD__.addItem(hi, code, isTM);",
-                arguments: ["hi": unit.headingIndex, "code": item.code, "isTM": isTM]
+                "return await window.__SECURE_AI_IPAD__.addItem(hi, hText, code, isTM);",
+                arguments: ["hi": unit.headingIndex, "hText": unit.headingText ?? "", "code": item.code, "isTM": isTM]
             )
             return extractJSResult(res)
 
@@ -293,8 +293,8 @@ final class AutomationController: ObservableObject {
                 ]
             }
             let res = try await browser.callAutomationJS(
-                "return await window.__SECURE_AI_IPAD__.fillMeasurements(hi, code, rows);",
-                arguments: ["hi": unit.headingIndex, "code": item.code, "rows": rowsArray]
+                "return await window.__SECURE_AI_IPAD__.fillMeasurements(hi, hText, code, rows);",
+                arguments: ["hi": unit.headingIndex, "hText": unit.headingText ?? "", "code": item.code, "rows": rowsArray]
             )
             return extractJSResult(res)
 
