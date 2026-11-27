@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V18__) return;
+      if (window.__SECURE_AI_IPAD_V19__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -103,6 +103,18 @@ enum SecureAutomationJS {
         for (const d of getAllDocs()) {
           try { if (d.activeElement && typeof d.activeElement.blur === 'function') d.activeElement.blur(); } catch (_) {}
         }
+      }
+
+      function sanitizeSecureDesc(raw, maxLen = 95) {
+        return String(raw == null ? '' : raw)
+          .replace(/[\r\n\t]+/g, ' ')
+          .replace(/:/g, '-')
+          .replace(/[×xX](?=\s*\d)/g, 'X')
+          .replace(/[–—]/g, '-')
+          .replace(/[^A-Za-z0-9 .+\-*()/]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, maxLen);
       }
 
       function setNativeValue(el, value, shouldBlur = true) {
@@ -564,7 +576,7 @@ enum SecureAutomationJS {
         }
 
         await moveCursorAndRipple(headInput);
-        setNativeValue(headInput, headingText);
+        setNativeValue(headInput, sanitizeSecureDesc(headingText, 120) || 'HEADING');
         await sleep(220);
 
         const addBtn = findButtonByText([/^add$/i, /save/i, /submit/i], form);
@@ -1093,34 +1105,42 @@ enum SecureAutomationJS {
             trs = getMeasRows();
 
             if (rIdx > 0) {
-              // Click the cyan '+' button in the Add/Remove column of the last row (below the red '-' button)
+              await dismissSwalIfAny();
+              // Click the cyan '+' button in the Add/Remove column of the last row (retry once if row count didn't increment)
               const prevCount = trs.length;
-              const lastTr = trs[trs.length - 1];
-              const rowButtons = Array.from(lastTr.querySelectorAll('button, a, .btn, span, i, svg'))
-                .filter((el) => {
-                  if (!isVisible(el)) return false;
-                  const r = el.getBoundingClientRect();
-                  return r.width >= 14 && r.width <= 60 && r.height >= 14 && r.height <= 48 && r.left > vw * 0.80;
+              for (let tryAdd = 0; tryAdd < 2; tryAdd++) {
+                trs = getMeasRows();
+                if (trs.length > prevCount) break;
+                const lastTr = trs[trs.length - 1];
+                if (!lastTr) break;
+                const rowButtons = Array.from(lastTr.querySelectorAll('button, a, .btn, span, i, svg'))
+                  .filter((el) => {
+                    if (!isVisible(el)) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width >= 14 && r.width <= 60 && r.height >= 14 && r.height <= 48 && r.left > vw * 0.80;
+                  });
+                let rowPlus = rowButtons.find((el) => {
+                  const cls = typeof el.className === 'string' ? el.className : (el.className?.baseVal || '');
+                  const txt = (el.innerText || '').trim();
+                  const low = `${cls} ${el.getAttribute('title') || ''}`.toLowerCase();
+                  return txt === '+' || low.includes('plus') || low.includes('info') || low.includes('primary') || low.includes('add');
                 });
-              let rowPlus = rowButtons.find((el) => {
-                const cls = typeof el.className === 'string' ? el.className : (el.className?.baseVal || '');
-                const txt = (el.innerText || '').trim();
-                const low = `${cls} ${el.getAttribute('title') || ''}`.toLowerCase();
-                return txt === '+' || low.includes('plus') || low.includes('info') || low.includes('primary') || low.includes('add');
-              });
-              if (!rowPlus && rowButtons.length >= 2) {
-                // Bottom-most button in Add/Remove column is always cyan '+' (top is red '-')
-                rowButtons.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
-                rowPlus = rowButtons[0];
-              }
-              if (rowPlus) {
-                const smallP = rowPlus.closest('button, a');
-                await clickEl((smallP && smallP.getBoundingClientRect().width <= 64) ? smallP : rowPlus);
-                for (let w = 0; w < 8; w++) {
-                  await sleep(180);
-                  trs = getMeasRows();
-                  if (trs.length > prevCount) break;
+                if (!rowPlus && rowButtons.length >= 2) {
+                  rowButtons.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
+                  rowPlus = rowButtons[0];
                 }
+                if (rowPlus) {
+                  const smallP = rowPlus.closest('button, a');
+                  await clickEl((smallP && smallP.getBoundingClientRect().width <= 64) ? smallP : rowPlus);
+                  for (let w = 0; w < 8; w++) {
+                    await sleep(180);
+                    trs = getMeasRows();
+                    if (trs.length > prevCount) break;
+                  }
+                }
+              }
+              if (trs.length <= prevCount) {
+                return { ok: false, message: `Could not append measurement row ${rIdx + 1} for ${code}.` };
               }
             }
 
@@ -1131,16 +1151,21 @@ enum SecureAutomationJS {
             const inputs = Array.from(targetTr.querySelectorAll('input:not([type="hidden"]):not([type="checkbox"]), textarea'))
               .filter((el) => isVisible(el) && !el.disabled && !el.readOnly);
 
+            // Sanitize Item Description strictly to SECURE v2's allowed characters: A-Z a-z 0-9 space . + - * ( ) /
+            const cleanDesc = sanitizeSecureDesc(rData.desc || 'Item', 95) || 'Item';
             // Exact SECURE v2 columns: [0]=Item Description, [1]=No, [2]=L/D/A, [3]=B/B, [4]=D/C, [5]=Cf
-            const values = [rData.desc || '', rData.no || '1', rData.l || '', rData.b || '', rData.d || '', rData.cf || ''];
+            const values = [cleanDesc, rData.no || '1', rData.l || '', rData.b || '', rData.d || '', rData.cf || ''];
             for (let ci = 0; ci < Math.min(inputs.length, values.length); ci++) {
               if (values[ci] !== '') {
                 setNativeValue(inputs[ci], values[ci]);
-                await sleep(60);
+                await sleep(65);
               }
             }
+            await dismissSwalIfAny();
           }
 
+          await sleep(160);
+          await dismissSwalIfAny();
           const saveBtn = await waitForRightBtn([/save\s*measurement/i, /^save$/i, /update/i], 10);
           if (!saveBtn) {
             return { ok: false, message: `Save Measurements button not found for ${code}.` };
@@ -1224,7 +1249,7 @@ enum SecureAutomationJS {
           return meta.includes('desc') && !meta.includes('head') && !meta.includes('analysis');
         });
         if (descInput && customDesc) {
-          setNativeValue(descInput, customDesc);
+          setNativeValue(descInput, sanitizeSecureDesc(customDesc, 95));
           await sleep(150);
         }
 
@@ -1319,7 +1344,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V18__ = true;
+      window.__SECURE_AI_IPAD_V19__ = true;
     })();
     """#
 }
