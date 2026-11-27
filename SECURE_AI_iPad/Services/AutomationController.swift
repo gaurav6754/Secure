@@ -218,23 +218,48 @@ final class AutomationController: ObservableObject {
                 }
 
                 let portalHeading = scraped.headings[hi]
-                let portalCodes = Set(portalHeading.items.map { $0.code.uppercased() })
+                let portalByCode = Dictionary(portalHeading.items.map { ($0.code.uppercased(), $0) }, uniquingKeysWith: { first, _ in first })
                 let expectedCodes = Set(heading.items.map { $0.code.uppercased() })
 
-                for (ii, item) in heading.items.enumerated() where !portalCodes.contains(item.code.uppercased()) {
-                    var repair: [AutomationUnit] = [
-                        AutomationUnit(id: "FIX_ADD_\(hi).\(ii)", kind: .addItem, label: "Add Missing Item \(item.code)", headingIndex: hi, itemIndex: ii, headingText: heading.text, item: item, lumpSum: nil)
-                    ]
-                    if !item.measurements.isEmpty {
-                        repair.append(AutomationUnit(id: "FIX_MEAS_\(hi).\(ii)", kind: .fillMeasurements, label: "Fill Measurements \(item.code)", headingIndex: hi, itemIndex: ii, headingText: heading.text, item: item, lumpSum: nil))
+                for (ii, item) in heading.items.enumerated() {
+                    let key = item.code.uppercased()
+                    guard let pItem = portalByCode[key] else {
+                        var repair: [AutomationUnit] = [
+                            AutomationUnit(id: "FIX_ADD_\(hi).\(ii)", kind: .addItem, label: "Add Missing Item \(item.code)", headingIndex: hi, itemIndex: ii, headingText: heading.text, item: item, lumpSum: nil)
+                        ]
+                        if !item.measurements.isEmpty {
+                            repair.append(AutomationUnit(id: "FIX_MEAS_\(hi).\(ii)", kind: .fillMeasurements, label: "Fill Measurements \(item.code)", headingIndex: hi, itemIndex: ii, headingText: heading.text, item: item, lumpSum: nil))
+                        }
+                        found.append(VerifyMismatch(
+                            category: "Missing Item",
+                            summary: "Heading \(hi + 1): Item \(item.code) missing on portal.",
+                            headingIndex: hi,
+                            itemIndex: ii,
+                            repairUnits: repair
+                        ))
+                        continue
                     }
-                    found.append(VerifyMismatch(
-                        category: "Missing Item",
-                        summary: "Heading \(hi + 1): Item \(item.code) missing on portal.",
-                        headingIndex: hi,
-                        itemIndex: ii,
-                        repairUnits: repair
-                    ))
+
+                    // Compare actual net quantity on SECURE portal vs PDF expected quantity!
+                    let expectedQty = item.totalQuantity
+                    let portalQty = pItem.quantity
+                    let tol = max(0.05, expectedQty * 0.005)
+                    if expectedQty > 0 && abs(portalQty - expectedQty) > tol {
+                        var repair: [AutomationUnit] = [
+                            AutomationUnit(id: "FIX_DEL_QTY_\(hi).\(ii)", kind: .deleteItem, label: "Delete Wrong Qty \(item.code)", headingIndex: hi, itemIndex: ii, headingText: heading.text, item: item, lumpSum: nil),
+                            AutomationUnit(id: "FIX_READD_QTY_\(hi).\(ii)", kind: .addItem, label: "Re-Add \(item.code)", headingIndex: hi, itemIndex: ii, headingText: heading.text, item: item, lumpSum: nil)
+                        ]
+                        if !item.measurements.isEmpty {
+                            repair.append(AutomationUnit(id: "FIX_REMEAS_QTY_\(hi).\(ii)", kind: .fillMeasurements, label: "Re-Fill Measurements \(item.code)", headingIndex: hi, itemIndex: ii, headingText: heading.text, item: item, lumpSum: nil))
+                        }
+                        found.append(VerifyMismatch(
+                            category: "Qty Mismatch",
+                            summary: String(format: "Heading %d: %@ qty is %.2f on portal (PDF expects %.2f) — will Delete & Re-Add.", hi + 1, item.code, portalQty, expectedQty),
+                            headingIndex: hi,
+                            itemIndex: ii,
+                            repairUnits: repair
+                        ))
+                    }
                 }
 
                 for pItem in portalHeading.items where !expectedCodes.contains(pItem.code.uppercased()) {

@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V20__) return;
+      if (window.__SECURE_AI_IPAD_V21__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -107,6 +107,8 @@ enum SecureAutomationJS {
 
       function sanitizeSecureDesc(raw, maxLen = 95) {
         let s = String(raw == null ? '' : raw)
+          .replace(/https?:\/\/\S+/gi, ' ')
+          .replace(/Page\s+\d+\s+of\s+\d+/gi, ' ')
           .replace(/[\r\n\t]+/g, ' ')
           .replace(/:/g, '-')
           .replace(/[×xX](?=\s*\d)/g, 'X')
@@ -115,13 +117,17 @@ enum SecureAutomationJS {
           .replace(/\s+/g, ' ')
           .trim();
         // Strip leading lone serial number like "1 GW PCC..." -> "GW PCC..."
-        s = s.replace(/^\d{1,2}\s+(?!MM\b|CM\b|FT\b|IN\b|M\b|SQM\b|CUM\b|KG\b)(?=[A-Za-z])/i, '');
-        // SECURE v2 rejects Item Description / Heading starting with a digit or symbol!
-        // Always guarantee it starts with an alphabet letter [A-Za-z].
+        s = s.replace(/^\d{1,2}\s+(?!MM\b|CM\b|FT\b|IN\b|INCH\b|M\b|SQM\b|CUM\b|KG\b)(?=[A-Za-z])/i, '');
+        // Smart reorder: "12 MM CM 1-4 PLASTER" -> "CM 1-4 PLASTER 12 MM", "100A BRICK..." -> "BRICK... 100A"
+        const leadNum = s.match(/^([0-9][A-Za-z0-9.\-]*(?:\s+(?:MM|CM|FT|IN|INCH|M|SQM|CUM|KG))?)\s+([A-Za-z].*)$/i);
+        if (leadNum) {
+          s = `${leadNum[2]} ${leadNum[1]}`.trim();
+        }
+        // SECURE v2 rejects Item Description / Heading starting with a digit or symbol (and never write lone "1")!
         if (!s || /^\d+$/.test(s)) {
           s = 'Work';
         } else if (!/^[A-Za-z]/.test(s)) {
-          s = 'Item ' + s;
+          s = 'Work ' + s;
         }
         return s.slice(0, maxLen).trim();
       }
@@ -1340,13 +1346,25 @@ enum SecureAutomationJS {
           const items = [];
           const seenCodes = new Set();
           codeRe.lastIndex = 0;
+          // Find every SOR code match and inspect the slice of text between this code and the next code for real Qty & ₹ Amount
+          const matches = [];
           let m;
           while ((m = codeRe.exec(text)) !== null) {
-            const c = m[1].toUpperCase();
-            if (!seenCodes.has(c)) {
-              seenCodes.add(c);
-              items.push({ code: c, description: c, quantity: 0, amount: 0 });
-            }
+            matches.push({ code: m[1].toUpperCase(), index: m.index });
+          }
+          for (let mi = 0; mi < matches.length; mi++) {
+            const c = matches[mi].code;
+            if (seenCodes.has(c)) continue;
+            seenCodes.add(c);
+            const sliceEnd = (mi + 1 < matches.length) ? matches[mi + 1].index : text.length;
+            const block = text.slice(matches[mi].index, sliceEnd);
+            // Match quantity like "726.319 sqm @" or "80.0 no @" or "21.233 cum @"
+            const qtyM = block.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:cum|sqm|metre|meter|rmt|kg|no|nos|day|each|ls|mt|qtl)\b/i);
+            const qtyVal = qtyM ? parseFloat(qtyM[1].replace(/,/g, '')) : 0;
+            // Match final rupee amount in the item block (last ₹ number, not the unit rate after @)
+            const rupeeMatches = Array.from(block.matchAll(/₹\s*(\d+(?:,\d+)*(?:\.\d+)?)/g));
+            const amtVal = rupeeMatches.length > 0 ? parseFloat(rupeeMatches[rupeeMatches.length - 1][1].replace(/,/g, '')) : 0;
+            items.push({ code: c, description: c, quantity: Number.isFinite(qtyVal) ? qtyVal : 0, amount: Number.isFinite(amtVal) ? amtVal : 0 });
           }
           headings.push({ index: idx, text: rawTitle, items });
         }
@@ -1364,18 +1382,63 @@ enum SecureAutomationJS {
       }
 
       async function deleteItemInHeading(headingIndex, code) {
+        await dismissSwalIfAny();
+        const vw = window.innerWidth || 1024;
         const row = findHeadingRowByTextOrIndex('', headingIndex);
         if (!row) return { ok: false, message: `Heading #${headingIndex + 1} not found for deletion.` };
-        const container = row.parentElement || row;
-        const codeUpper = String(code).toUpperCase();
-        const rows = Array.from(container.querySelectorAll('tr, li, .item-row, div')).filter(isVisible);
+        try { row.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+        const getContainer = () => row.closest('mat-expansion-panel, .card, .accordion-item, li') || row.parentElement || row;
+        const codeUpper = String(code).trim().toUpperCase();
         const escDel = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const delRe = new RegExp('(^|[^A-Z0-9.])' + escDel(codeUpper) + '($|[^A-Z0-9.])');
-        const match = rows.find((r) => delRe.test((r.innerText || '').toUpperCase()) && r.querySelector('.fa-trash, .bi-trash, button[title*="Delete"], a[title*="Delete"]'));
-        if (!match) return { ok: false, message: `Delete icon not found for item ${code}.` };
-        const delBtn = match.querySelector('.fa-trash, .bi-trash, button[title*="Delete"], a[title*="Delete"]')?.closest('button, a')
-          || match.querySelector('.fa-trash, .bi-trash');
-        await clickEl(delBtn);
+
+        const findItemCard = () => {
+          const cont = getContainer();
+          const nodes = Array.from(cont.querySelectorAll('div, tr, li'))
+            .filter((r) => {
+              if (!isVisible(r)) return false;
+              const rr = r.getBoundingClientRect();
+              if (rr.left > vw * 0.45 || rr.height > 140 || rr.height < 20) return false;
+              const t = (r.innerText || '').toUpperCase();
+              return delRe.test(t) && !t.includes('ANALYSIS OF RATES');
+            })
+            .sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
+          if (nodes.length === 0) return null;
+          let itemEl = nodes[0];
+          for (let s = 0; s < 5 && itemEl.parentElement; s++) {
+            const ir = itemEl.getBoundingClientRect();
+            const pr = itemEl.parentElement.getBoundingClientRect();
+            if (ir.width >= vw * 0.28 && ir.height <= 125) break;
+            if (pr.width <= vw * 0.46 && pr.height <= 130) itemEl = itemEl.parentElement;
+            else break;
+          }
+          return itemEl;
+        };
+
+        let itemCard = findItemCard();
+        if (!itemCard) {
+          await clickEl(row);
+          await sleep(450);
+          itemCard = findItemCard();
+        }
+        if (!itemCard) return { ok: false, message: `Item ${code} not found under Heading #${headingIndex + 1} for deletion.` };
+
+        // Click the red trash icon (rightmost small icon inside itemCard)
+        let delBtn = itemCard.querySelector('.fa-trash, .fa-trash-alt, .bi-trash, [title*="Delete" i], [aria-label*="Delete" i]');
+        if (!delBtn) {
+          const ir = itemCard.getBoundingClientRect();
+          const icons = Array.from(itemCard.querySelectorAll('button, a, svg, i, img, mat-icon, fa-icon, span'))
+            .filter((el) => {
+              if (!isVisible(el)) return false;
+              const r = el.getBoundingClientRect();
+              return r.width >= 10 && r.width <= 44 && r.height >= 10 && r.height <= 44 && r.left > ir.left + ir.width * 0.60;
+            })
+            .sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left);
+          delBtn = icons[0] || null;
+        }
+        if (!delBtn) return { ok: false, message: `Delete trash icon not found for item ${code}.` };
+        const smallBtn = delBtn.closest?.('button, a');
+        await clickEl((smallBtn && smallBtn.getBoundingClientRect().width <= 56) ? smallBtn : delBtn);
         return await confirmSwalDelete();
       }
 
@@ -1391,7 +1454,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V20__ = true;
+      window.__SECURE_AI_IPAD_V21__ = true;
     })();
     """#
 }

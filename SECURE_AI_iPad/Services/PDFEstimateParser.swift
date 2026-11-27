@@ -249,6 +249,11 @@ final class PDFEstimateParser {
 
             // 7. Measurement rows strictly inside measurement block (between Sl No header and LIST)
             if inMeasurementBlock, let hi = currentHeadingIndex, let ii = currentItemIndex {
+                // Skip PDF page footers, URLs, and page numbers (e.g. "https://secure.dord.gov.in/securev2/draftWorks?mvsl=166 Page 2 of 9")
+                if low.contains("http://") || low.contains("https://") || low.contains("secure.dord.gov.in") || low.contains("draftworks") ||
+                   compact.range(of: #"^Page\s+\d+\s+of\s+\d+$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+                    continue
+                }
                 // Skip pure boundary lines
                 if low.hasPrefix("total quantity") || low.hasPrefix("net total") || low.hasPrefix("unskilled") {
                     inMeasurementBlock = false
@@ -311,8 +316,8 @@ final class PDFEstimateParser {
             descTokens.removeFirst()
         }
 
-        // If descTokens is empty and tailNumbers has an extra leading serial number (unlikely because wrapped desc was above)
-        let combinedDesc = (pendingDescParts + descTokens).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        let rawCombined = (pendingDescParts + descTokens).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        let combinedDesc = cleanAndReorderSecureDesc(rawCombined)
         pendingDescParts.removeAll()
 
         let isDed = combinedDesc.lowercased().contains("deduct") || combinedDesc.lowercased().hasPrefix("less") || (tailNumbers.last?.hasPrefix("-") == true)
@@ -335,6 +340,44 @@ final class PDFEstimateParser {
             let s = Array(nums.suffix(6))
             return MeasurementRow(desc: combinedDesc, no: s[0], l: s[1], b: s[2], d: s[3], cf: s[4], qty: s[5], isDeduction: isDed)
         }
+    }
+
+    /// Cleans URLs/illegal characters and guarantees descriptions start with an alphabet letter
+    /// (e.g. "12 MM CM 1:4 PLASTER" -> "CM 1-4 PLASTER 12 MM", "100A BRICK FLAT SOLING" -> "BRICK FLAT SOLING 100A", "1" -> "Work").
+    private func cleanAndReorderSecureDesc(_ raw: String) -> String {
+        var s = raw
+            .replacingOccurrences(of: #"https?://\S+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"Page\s+\d+\s+of\s+\d+"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "×", with: "X")
+            .replacingOccurrences(of: "–", with: "-")
+            .replacingOccurrences(of: "—", with: "-")
+            .replacingOccurrences(of: #"[^A-Za-z0-9 .+\-*()/]"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Strip lone leading serial number (not followed by a measurement unit)
+        s = s.replacingOccurrences(
+            of: #"^\d{1,2}\s+(?!MM\b|CM\b|FT\b|IN\b|INCH\b|M\b|SQM\b|CUM\b|KG\b)(?=[A-Za-z])"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+
+        // Smart reorder: move leading number/grade/thickness (e.g. "12 MM", "100A", "12mm") to the end so Alphabet is ALWAYS first!
+        if let re = try? NSRegularExpression(pattern: #"^([0-9][A-Za-z0-9.\-]*(?:\s+(?:MM|CM|FT|IN|INCH|M|SQM|CUM|KG))?)\s+([A-Za-z].*)$"#, options: .caseInsensitive),
+           let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
+           let r1 = Range(m.range(at: 1), in: s),
+           let r2 = Range(m.range(at: 2), in: s) {
+            s = "\(s[r2]) \(s[r1])".trimmingCharacters(in: .whitespaces)
+        }
+
+        if s.isEmpty || s.range(of: #"^\d+$"#, options: .regularExpression) != nil {
+            return "Work"
+        }
+        if s.range(of: #"^[A-Za-z]"#, options: .regularExpression) == nil {
+            return "Work " + s
+        }
+        return String(s.prefix(95))
     }
 
     private func parseLumpSumTokens(_ text: String, into ls: inout LumpSumItem) {
