@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V16__) return;
+      if (window.__SECURE_AI_IPAD_V17__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1165,6 +1165,12 @@ enum SecureAutomationJS {
           optionMatcher: (txt) => {
             const low = txt.toLowerCase();
             if (low.includes('select lump sum') || low === 'lump sum type' || low.includes('lump sum description')) return false;
+            if (kwLow === 'display' || kwLow === 'display board') {
+              return low.includes('display') || low.includes('cib');
+            }
+            if (kwLow === 'bf') {
+              return low.includes('bft') || low.includes('bf/t');
+            }
             return low.includes(kwLow);
           }
         });
@@ -1260,7 +1266,9 @@ enum SecureAutomationJS {
         const container = row.parentElement || row;
         const codeUpper = String(code).toUpperCase();
         const rows = Array.from(container.querySelectorAll('tr, li, .item-row, div')).filter(isVisible);
-        const match = rows.find((r) => (r.innerText || '').toUpperCase().includes(codeUpper) && r.querySelector('.fa-trash, .bi-trash, button[title*="Delete"], a[title*="Delete"]'));
+        const escDel = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const delRe = new RegExp('(^|[^A-Z0-9.])' + escDel(codeUpper) + '($|[^A-Z0-9.])');
+        const match = rows.find((r) => delRe.test((r.innerText || '').toUpperCase()) && r.querySelector('.fa-trash, .bi-trash, button[title*="Delete"], a[title*="Delete"]'));
         if (!match) return { ok: false, message: `Delete icon not found for item ${code}.` };
         const delBtn = match.querySelector('.fa-trash, .bi-trash, button[title*="Delete"], a[title*="Delete"]')?.closest('button, a')
           || match.querySelector('.fa-trash, .bi-trash');
@@ -1280,7 +1288,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V16__ = true;
+      window.__SECURE_AI_IPAD_V17__ = true;
     })();
     """#
 }

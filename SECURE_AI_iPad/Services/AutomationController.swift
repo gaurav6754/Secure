@@ -156,6 +156,7 @@ final class AutomationController: ObservableObject {
                 }
             }
 
+            _ = try? await browser.callAutomationJS("if (window.__SECURE_AI_IPAD__) window.__SECURE_AI_IPAD__.hideCursor();")
             isRunning = false
             isPaused = false
             currentStepLabel = stopRequested ? "Stopped by user" : "Completed \(completedSteps)/\(totalSteps)"
@@ -321,26 +322,44 @@ final class AutomationController: ObservableObject {
     }
 
     private func mapLumpSumKeyword(_ ls: LumpSumItem) -> (String, String) {
-        let low = "\(ls.description) \(ls.type)".lowercased()
+        // ONLY inspect ls.description (NEVER ls.type, because "Material" contains substring "mate"!)
+        let descLow = ls.description.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let pairs: [(String, String)] = [
             ("conveyance", "Conveyance"),
             ("carriage", "Conveyance"),
             ("electrification", "Electrification"),
             ("gst", "GST"),
-            ("bf/t/a", "BF"),
-            ("mate", "BF"),
-            ("cess", "Labour Welfare"),
-            ("welfare", "Labour Welfare"),
-            ("quality", "Quality control"),
-            ("survey", "Quality control"),
+            ("miscellaneous", "Miscellaneous"),
+            ("misc", "Miscellaneous"),
+            ("conting", "Miscellaneous"),
+            ("royalty", "Miscellaneous"),
+            ("display", "Display"),
+            ("sign board", "Display"),
+            ("signboard", "Display"),
+            ("cib", "Display"),
+            ("board", "Display"),
+            ("labour", "Labour"),
+            ("welfare", "Labour"),
+            ("cess", "Labour"),
+            ("quality", "Quality"),
+            ("survey", "Quality"),
+            ("testing", "Quality"),
+            ("worksite", "Worksite"),
+            ("work site", "Worksite"),
             ("creche", "Worksite"),
             ("drinking", "Worksite"),
-            ("display", "Display Board"),
-            ("cib", "Display Board"),
-            ("board", "Display Board")
+            ("first aid", "Worksite"),
+            ("first-aid", "Worksite"),
+            ("bf/t/a", "BF"),
+            ("bft/ta", "BF"),
+            ("bft", "BF")
         ]
-        for (needle, kw) in pairs where low.contains(needle) {
+        for (needle, kw) in pairs where descLow.contains(needle) {
             return (kw, "")
+        }
+        // Only match standalone word "mate" (never "material" or "estimate")
+        if descLow.range(of: #"\bmate\b"#, options: .regularExpression) != nil {
+            return ("BF", "")
         }
         return ("Miscellaneous", ls.description)
     }
