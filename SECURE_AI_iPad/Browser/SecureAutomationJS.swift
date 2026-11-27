@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V23__) return;
+      if (window.__SECURE_AI_IPAD_V24__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -550,8 +550,11 @@ enum SecureAutomationJS {
           .filter((el) => {
             if (!isVisible(el)) return false;
             const r = el.getBoundingClientRect();
-            if (r.width < 10 || r.width > 46 || r.height < 10 || r.height > 46) return false;
+            if (r.width < 10 || r.width > 44 || r.height < 10 || r.height > 44) return false;
             if (r.left < minLeft || r.right > maxRight) return false;
+            // NEVER pick 'See more' or '₹ 38435.87' text spans/links — the ⊕ icon has zero text (or just '+')!
+            const rawTxt = (el.innerText || '').trim();
+            if (rawTxt.length > 1) return false;
             const win = el.ownerDocument?.defaultView || window;
             const clickable = ['BUTTON', 'A', 'SVG', 'I', 'IMG', 'MAT-ICON', 'FA-ICON'].includes(el.tagName)
               || el.getAttribute('role') === 'button'
@@ -866,14 +869,15 @@ enum SecureAutomationJS {
 
         const plusCands = findAddItemCandidatesInRow(row);
         const rr = row.getBoundingClientRect();
-        for (const frac of [0.74, 0.71, 0.77, 0.68]) {
+        for (const frac of [0.83, 0.80, 0.86, 0.76, 0.73]) {
           const px = rr.left + rr.width * frac;
           const py = rr.top + Math.min(rr.height * 0.5, 28);
           try {
             const hit = (row.ownerDocument || document).elementFromPoint(px, py);
             if (hit && !plusCands.includes(hit)) {
               const hr = hit.getBoundingClientRect();
-              if (hr.width <= 56 && hr.height <= 56) plusCands.push(hit);
+              const ht = (hit.innerText || '').trim();
+              if (hr.width <= 48 && hr.height <= 48 && ht.length <= 1) plusCands.push(hit);
             }
           } catch (_) {}
         }
@@ -883,15 +887,18 @@ enum SecureAutomationJS {
         }
 
         let searchBox = null;
-        for (const cand of plusCands.slice(0, 4)) {
+        for (const cand of plusCands.slice(0, 5)) {
           await clickEl(cand);
-          await waitForPortalIdle(700, 12000);
+          await waitForPortalIdle(550, 10000);
           for (let w = 0; w < 6; w++) {
             searchBox = findRightSearchBox();
             if (searchBox) break;
-            await sleep(200);
+            await sleep(180);
           }
           if (searchBox) break;
+        }
+        if (!searchBox) {
+          return { ok: false, message: `Could not open Specification/Activity from ⊕ on "${headingText}".` };
         }
 
         // Select the right Sub Head Type (handles BOTH custom dropdown and native <select>!)
@@ -1473,7 +1480,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V23__ = true;
+      window.__SECURE_AI_IPAD_V24__ = true;
     })();
     """#
 }
