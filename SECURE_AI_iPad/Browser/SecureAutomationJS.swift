@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V11__) return;
+      if (window.__SECURE_AI_IPAD_V12__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -544,101 +544,161 @@ enum SecureAutomationJS {
           return true;
         };
 
-        // 1. Try native <select> first
-        const nativeSelects = (root ? Array.from(root.querySelectorAll('select')) : queryAllAcrossDocs('select'))
-          .filter((s) => isVisible(s) && !s.disabled && inPanel(s.getBoundingClientRect()));
-        for (const sel of nativeSelects) {
-          const allTxt = Array.from(sel.options).map((o) => o.text || '').join(' ').toLowerCase();
-          if (triggerMatchers.some((re) => re.test(allTxt)) || nativeSelects.length === 1) {
-            const opts = Array.from(sel.options);
-            const chosen = opts.find((o) => optionMatcher((o.text || '').trim()));
-            if (chosen) {
-              try { sel.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
-              await moveCursorAndRipple(sel);
-              sel.selectedIndex = chosen.index;
-              sel.value = chosen.value;
-              sel.dispatchEvent(new Event('input', { bubbles: true }));
-              sel.dispatchEvent(new Event('change', { bubbles: true }));
-              await waitForPortalIdle(900, 15000);
-              return { ok: true, selectedText: (chosen.text || '').trim(), mode: 'native-select' };
-            }
-          }
-        }
-
-        // 2. Custom Angular / Material / ng-select / Bootstrap dropdown trigger
-        const triggerCandidates = (root
-          ? Array.from(root.querySelectorAll('mat-select, ng-select, p-dropdown, [role="combobox"], [role="listbox"], button, div, span'))
-          : queryAllAcrossDocs('mat-select, ng-select, p-dropdown, [role="combobox"], [role="listbox"], button, div, span')
-        ).filter((el) => {
-          if (!isVisible(el) || el.disabled) return false;
-          const r = el.getBoundingClientRect();
-          if (!inPanel(r) || r.width < 110 || r.height < 22 || r.height > 72 || r.top > vh * 0.65) return false;
-          const t = (el.innerText || el.textContent || '').trim();
-          if (t.length === 0 || t.length > 90) return false;
-          return triggerMatchers.some((re) => re.test(t));
-        }).sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
-
-        if (triggerCandidates.length === 0) {
-          return { ok: false, message: 'Dropdown trigger not found' };
-        }
-
-        const trigger = triggerCandidates[0];
-        const currentTxt = (trigger.innerText || trigger.textContent || '').trim();
-        if (optionMatcher(currentTxt)) {
-          return { ok: true, selectedText: currentTxt, mode: 'already-selected' };
-        }
-
-        // Open the custom dropdown popup
-        await clickEl(trigger);
-        await sleep(400);
-
-        const findMatchingOption = () => {
-          const optNodes = queryAllAcrossDocs('mat-option, [role="option"], .ng-option, .p-dropdown-item, .dropdown-item, li, div, span')
-            .filter((el) => {
-              if (!isVisible(el) || el === trigger || trigger.contains(el)) return false;
-              const r = el.getBoundingClientRect();
-              if (!inPanel(r) || r.height < 16 || r.height > 70 || r.width < 90) return false;
-              const t = (el.innerText || el.textContent || '').trim();
-              if (t.length === 0 || t.length > 100) return false;
-              return optionMatcher(t);
-            })
-            .sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
-          return optNodes[0] || null;
+        const applyNativeSelect = async (sel) => {
+          const opts = Array.from(sel.options || []);
+          const chosen = opts.find((o) => optionMatcher((o.text || o.label || '').trim()));
+          if (!chosen) return null;
+          try { sel.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+          await moveCursorAndRipple(sel);
+          sel.selectedIndex = chosen.index;
+          sel.value = chosen.value;
+          sel.dispatchEvent(new Event('input', { bubbles: true }));
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          sel.dispatchEvent(new Event('blur', { bubbles: true }));
+          await waitForPortalIdle(950, 15000);
+          return { ok: true, selectedText: (chosen.text || '').trim(), mode: 'native-select' };
         };
 
-        let optEl = findMatchingOption();
-
-        // If option isn't visible yet, scroll any open dropdown overlay/list container down to bottom (where 54 - MGNREGA options live)
-        if (!optEl) {
-          const scrollables = queryAllAcrossDocs('.cdk-overlay-pane, .mat-select-panel, .mat-mdc-select-panel, .ng-dropdown-panel-items, .dropdown-menu, ul, div')
-            .filter((el) => {
-              if (!isVisible(el)) return false;
-              const r = el.getBoundingClientRect();
-              if (!inPanel(r) || r.height < 60) return false;
-              return el.scrollHeight > el.clientHeight + 20;
-            });
-          for (const sc of scrollables) {
-            // Step-scroll down so even virtualized lists render the bottom options
-            for (let step = 1; step <= 6; step++) {
-              sc.scrollTop = Math.round((sc.scrollHeight * step) / 6);
-              sc.dispatchEvent(new Event('scroll', { bubbles: true }));
-              await sleep(160);
-              optEl = findMatchingOption();
-              if (optEl) break;
+        // Wait up to 3.2s for the dropdown & its options to finish loading from SECURE API
+        for (let attempt = 0; attempt < 12; attempt++) {
+          // 1. Native <select> check (including Shadow DOM / Angular <select>)
+          const nativeSelects = (root ? Array.from(root.querySelectorAll('select')) : queryAllAcrossDocs('select'))
+            .filter((s) => isVisible(s) && !s.disabled && inPanel(s.getBoundingClientRect()));
+          for (const sel of nativeSelects) {
+            if ((sel.options || []).length > 1) {
+              const allTxt = Array.from(sel.options).map((o) => o.text || '').join(' ').toLowerCase();
+              if (triggerMatchers.some((re) => re.test(allTxt)) || nativeSelects.length === 1) {
+                const res = await applyNativeSelect(sel);
+                if (res) return res;
+              }
             }
-            if (optEl) break;
           }
+
+          // 2. Custom Angular / Material / ng-select / input / button dropdown trigger
+          const getElLabel = (el) => {
+            if (el.tagName === 'SELECT') {
+              const opt = el.options && el.options[el.selectedIndex];
+              return ((opt && opt.text) || '').trim();
+            }
+            if (el.tagName === 'INPUT') {
+              return (el.value || el.placeholder || el.getAttribute('aria-label') || '').trim();
+            }
+            return (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim();
+          };
+
+          const triggerCandidates = (root
+            ? Array.from(root.querySelectorAll('input, select, mat-select, ng-select, p-dropdown, [role="combobox"], [role="listbox"], button, div, span'))
+            : queryAllAcrossDocs('input, select, mat-select, ng-select, p-dropdown, [role="combobox"], [role="listbox"], button, div, span')
+          ).filter((el) => {
+            if (!isVisible(el) || el.disabled) return false;
+            const r = el.getBoundingClientRect();
+            if (!inPanel(r) || r.width < 110 || r.height < 20 || r.height > 72 || r.top > vh * 0.65) return false;
+            const t = getElLabel(el);
+            if (t.length === 0 || t.length > 90) return false;
+            return triggerMatchers.some((re) => re.test(t));
+          }).sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
+
+          // 3. Direct coordinate anchor for Right Panel '-- Select Sub Head Type --' (same row as 'Specification / Activity')
+          if (triggerCandidates.length === 0 && panelSide === 'right') {
+            for (const n of queryAllAcrossDocs('h4, h5, h6, div, span, p, label')) {
+              if (!isVisible(n)) continue;
+              const t = (n.textContent || '').trim();
+              if (t.length < 40 && t.toLowerCase().includes('specification / activity')) {
+                const sr = n.getBoundingClientRect();
+                if (sr.left > vw * 0.36 && sr.height < 60) {
+                  const hit = (n.ownerDocument || document).elementFromPoint(vw * 0.74, sr.top + sr.height / 2);
+                  if (hit) {
+                    const wrap = hit.closest('select, input, mat-select, ng-select, p-dropdown, button, [role="combobox"]') || hit;
+                    if (wrap.tagName === 'SELECT' && (wrap.options || []).length > 1) {
+                      const res = await applyNativeSelect(wrap);
+                      if (res) return res;
+                    }
+                    triggerCandidates.push(wrap);
+                  }
+                }
+                break;
+              }
+            }
+          }
+
+          if (triggerCandidates.length > 0) {
+            const trigger = triggerCandidates[0];
+            if (trigger.tagName === 'SELECT') {
+              if ((trigger.options || []).length > 1) {
+                const res = await applyNativeSelect(trigger);
+                if (res) return res;
+              }
+              await sleep(260);
+              continue;
+            }
+
+            const currentTxt = getElLabel(trigger);
+            if (optionMatcher(currentTxt)) {
+              return { ok: true, selectedText: currentTxt, mode: 'already-selected' };
+            }
+
+            // Click the custom dropdown trigger to open its popup list
+            await clickEl(trigger);
+            await sleep(420);
+
+            const findMatchingOption = () => {
+              const optNodes = queryAllAcrossDocs('mat-option, [role="option"], .ng-option, .p-dropdown-item, .dropdown-item, li, div, span, a, p')
+                .filter((el) => {
+                  if (!isVisible(el) || el === trigger || trigger.contains(el)) return false;
+                  const r = el.getBoundingClientRect();
+                  if (!inPanel(r) || r.height < 16 || r.height > 70 || r.width < 80) return false;
+                  const t = (el.innerText || el.textContent || '').trim();
+                  if (t.length === 0 || t.length > 110) return false;
+                  return optionMatcher(t);
+                })
+                .sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
+              return optNodes[0] || null;
+            };
+
+            let optEl = findMatchingOption();
+
+            // Scroll open dropdown list down to the bottom (where 54 - MGNREGA Bihar Data- TM & Data live)
+            if (!optEl) {
+              const scrollables = queryAllAcrossDocs('.cdk-overlay-pane, .mat-select-panel, .mat-mdc-select-panel, .ng-dropdown-panel-items, .dropdown-menu, ul, div')
+                .filter((el) => {
+                  if (!isVisible(el)) return false;
+                  const r = el.getBoundingClientRect();
+                  if (!inPanel(r) || r.height < 55) return false;
+                  return el.scrollHeight > el.clientHeight + 15;
+                });
+              for (const sc of scrollables) {
+                for (let step = 1; step <= 6; step++) {
+                  sc.scrollTop = Math.round((sc.scrollHeight * step) / 6);
+                  sc.dispatchEvent(new Event('scroll', { bubbles: true }));
+                  await sleep(160);
+                  optEl = findMatchingOption();
+                  if (optEl) break;
+                }
+                if (optEl) break;
+              }
+            }
+
+            if (optEl) {
+              try { optEl.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+              await sleep(140);
+              await clickEl(optEl);
+              await waitForPortalIdle(950, 15000);
+              return { ok: true, selectedText: (optEl.innerText || optEl.textContent || '').trim(), mode: 'custom-dropdown' };
+            }
+
+            return { ok: false, message: `Opened ${trigger.tagName} (${currentTxt.slice(0, 24)}) but target option not found` };
+          }
+
+          await sleep(260);
         }
 
-        if (!optEl) {
-          return { ok: false, message: 'Target option not found inside open dropdown list' };
-        }
-
-        try { optEl.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
-        await sleep(140);
-        await clickEl(optEl);
-        await waitForPortalIdle(950, 15000);
-        return { ok: true, selectedText: (optEl.innerText || optEl.textContent || '').trim(), mode: 'custom-dropdown' };
+        // X-ray diagnostic if still not found
+        let diag = 'none';
+        try {
+          const sels = queryAllAcrossDocs('select').filter((s) => isVisible(s));
+          diag = `selects=${sels.length} [` + sels.map((s) => `${Math.round(s.getBoundingClientRect().left)}:${(s.options||[]).length}`).join(',') + ']';
+        } catch (_) {}
+        return { ok: false, message: `Dropdown trigger not found (${diag})` };
       }
 
       function findSearchButtonNear(searchBox) {
@@ -1067,7 +1127,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V11__ = true;
+      window.__SECURE_AI_IPAD_V12__ = true;
     })();
     """#
 }
