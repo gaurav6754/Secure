@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V13__) return;
+      if (window.__SECURE_AI_IPAD_V14__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -116,6 +116,7 @@ enum SecureAutomationJS {
         if (setter) setter.call(el, str);
         else el.value = str;
         el.dispatchEvent(new Event('input', { bubbles: true }));
+        try { el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true })); } catch (_) {}
         el.dispatchEvent(new Event('change', { bubbles: true }));
         el.dispatchEvent(new Event('blur', { bubbles: true }));
         if (shouldBlur) blurKeyboard();
@@ -210,12 +211,23 @@ enum SecureAutomationJS {
       function findRightPanelButtonByText(patterns) {
         const vw = window.innerWidth || 1024;
         const regexList = patterns.map((p) => (p instanceof RegExp ? p : new RegExp(p, 'i')));
-        const candidates = queryAllAcrossDocs('button, a.btn, input[type="button"], input[type="submit"], [role="button"], a')
+        const primary = queryAllAcrossDocs('button, a.btn, input[type="button"], input[type="submit"], [role="button"], a, .btn')
           .filter((el) => isVisible(el) && !el.disabled && el.getBoundingClientRect().left > vw * 0.35);
-        for (const el of candidates) {
+        for (const el of primary) {
           const txt = (el.innerText || el.value || el.getAttribute('title') || el.getAttribute('aria-label') || '').trim();
-          if (regexList.some((re) => re.test(txt))) return el;
+          if (txt.length <= 50 && regexList.some((re) => re.test(txt))) return el;
         }
+        // Fallback: clickable div/span buttons (e.g. Angular custom styled 'Add Measurements +' / 'Add Deduction +')
+        const fallback = queryAllAcrossDocs('div, span, label')
+          .filter((el) => {
+            if (!isVisible(el)) return false;
+            const r = el.getBoundingClientRect();
+            if (r.left <= vw * 0.35 || r.height < 20 || r.height > 64 || r.width < 40 || r.width > 320) return false;
+            const txt = (el.innerText || el.textContent || '').trim();
+            return txt.length > 0 && txt.length <= 45 && regexList.some((re) => re.test(txt));
+          })
+          .sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
+        if (fallback.length > 0) return fallback[0];
         return findButtonByText(patterns);
       }
 
@@ -888,7 +900,6 @@ enum SecureAutomationJS {
           return { ok: false, message: `Heading "${headingText}" not found for measurements of ${code}.` };
         }
 
-        // Locate the item row under this heading (expand heading if collapsed)
         const findItemRow = () => {
           const container = row.parentElement?.parentElement || row.parentElement || document;
           const codeUpper = String(code).toUpperCase();
@@ -902,7 +913,6 @@ enum SecureAutomationJS {
             })
             .sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
           if (nodes.length > 0) {
-            // Walk up to the full item row containing its blue (+) and red trash icons
             let itemEl = nodes[0];
             for (let s = 0; s < 5 && itemEl.parentElement; s++) {
               const ir = itemEl.getBoundingClientRect();
@@ -923,7 +933,6 @@ enum SecureAutomationJS {
           itemNode = findItemRow();
         }
         if (itemNode) {
-          // Click the filled blue (+) button on the right half of the item row (before the red trash icon)
           const ir = itemNode.getBoundingClientRect();
           const itemIcons = Array.from(itemNode.querySelectorAll('button, a, svg, i, img, mat-icon, fa-icon, span'))
             .filter((el) => {
@@ -944,68 +953,151 @@ enum SecureAutomationJS {
           await waitForPortalIdle(800, 15000);
         }
 
-        const getMeasRows = () => queryAllAcrossDocs('table tbody tr').filter((tr) => {
-          return isVisible(tr) && tr.getBoundingClientRect().left > vw * 0.35 && tr.querySelectorAll('input:not([type="hidden"]):not([type="checkbox"])').length >= 3;
-        });
+        const getMeasRows = () => {
+          // 1. Standard HTML table rows with >= 4 inputs on right panel
+          const trs = queryAllAcrossDocs('table tbody tr, tr').filter((tr) => {
+            if (!isVisible(tr) || tr.getBoundingClientRect().left <= vw * 0.35) return false;
+            const inps = tr.querySelectorAll('input:not([type="hidden"]):not([type="checkbox"]), textarea');
+            return inps.length >= 4;
+          });
+          if (trs.length > 0) return trs;
+          // 2. Flex/grid div rows with >= 4 inputs on right panel
+          const divs = queryAllAcrossDocs('div.row, div[class*="row"], form div').filter((d) => {
+            if (!isVisible(d)) return false;
+            const r = d.getBoundingClientRect();
+            if (r.left <= vw * 0.35 || r.height < 28 || r.height > 110) return false;
+            const inps = d.querySelectorAll('input:not([type="hidden"]):not([type="checkbox"]), textarea');
+            return inps.length >= 4 && inps.length <= 10;
+          });
+          return divs;
+        };
 
-        for (let rIdx = 0; rIdx < rowsData.length; rIdx++) {
-          const rData = rowsData[rIdx];
+        const waitForRightBtn = async (patterns, maxChecks = 12) => {
+          for (let i = 0; i < maxChecks; i++) {
+            const b = findRightPanelButtonByText(patterns);
+            if (b) return b;
+            await sleep(220);
+          }
+          return null;
+        };
+
+        const fillBatch = async (batchRows, isDeductionBatch) => {
+          if (batchRows.length === 0) return { ok: true };
+
+          // Open the Measurement or Deduction form via 'Add Measurements +' or 'Add Deduction +'
           let trs = getMeasRows();
-
-          // On Row 0: if no measurement input row is visible yet, click 'Add Measurements +' (or 'Add Deduction +')!
-          if (rIdx === 0 && trs.length === 0) {
-            const openBtn = rData.isDeduction
-              ? findRightPanelButtonByText([/add\s*deduct/i, /deduction/i])
-              : findRightPanelButtonByText([/add\s*measurement/i, /add\s*row/i, /\+\s*add/i]);
-            if (openBtn) {
-              await clickEl(openBtn);
-              await waitForPortalIdle(600, 10000);
+          if (trs.length === 0) {
+            const openPatterns = isDeductionBatch
+              ? [/add\s*deduction/i, /deduction/i]
+              : [/add\s*measurement/i, /measurement/i];
+            const openBtn = await waitForRightBtn(openPatterns, 14);
+            if (!openBtn) {
+              return { ok: false, message: `${isDeductionBatch ? 'Add Deduction +' : 'Add Measurements +'} button not found for ${code}.` };
+            }
+            await clickEl(openBtn);
+            await waitForPortalIdle(500, 12000);
+            for (let w = 0; w < 12; w++) {
               trs = getMeasRows();
+              if (trs.length > 0) break;
+              await sleep(220);
             }
-          } else if (rIdx > 0) {
-            // Try the small cyan '+' button in the last row first, or 'Add Deduction +' / 'Add Measurements +'
-            let added = false;
-            if (rData.isDeduction) {
-              const dedBtn = findRightPanelButtonByText([/add\s*deduct/i, /deduction/i]);
-              if (dedBtn) { await clickEl(dedBtn); await sleep(350); added = true; }
+          }
+
+          if (trs.length === 0) {
+            return { ok: false, message: `Measurement table did not open for ${code}.` };
+          }
+
+          // Optional Head Description for Deduction batch
+          if (isDeductionBatch) {
+            const headDesc = queryAllAcrossDocs('input[type="text"], input:not([type]), textarea')
+              .find((el) => {
+                if (!isVisible(el) || el.disabled || el.readOnly) return false;
+                const r = el.getBoundingClientRect();
+                if (r.left <= vw * 0.35 || el.closest('table, tr')) return false;
+                const meta = `${el.placeholder || ''} ${el.name || ''} ${el.id || ''} ${el.parentElement?.innerText || ''}`.toLowerCase();
+                return meta.includes('head') && meta.includes('desc');
+              });
+            if (headDesc && !headDesc.value) {
+              setNativeValue(headDesc, 'Deduction');
+              await sleep(100);
             }
-            if (!added && trs.length > 0) {
-              const lastTr = trs[trs.length - 1];
-              const rowPlus = lastTr.querySelector('.fa-plus, .bi-plus, button.btn-info, button.btn-primary, button[title*="Add" i]')
-                || Array.from(lastTr.querySelectorAll('button, a')).find((b) => isVisible(b) && (b.innerText || '').trim() === '+');
-              if (rowPlus) { await clickEl(rowPlus); await sleep(300); added = true; }
-            }
-            if (!added) {
-              const addRowBtn = findRightPanelButtonByText([/add\s*measurement/i, /add\s*row/i, /\+\s*add/i]);
-              if (addRowBtn) { await clickEl(addRowBtn); await sleep(350); }
-            }
+          }
+
+          for (let rIdx = 0; rIdx < batchRows.length; rIdx++) {
+            const rData = batchRows[rIdx];
             trs = getMeasRows();
-          }
 
-          const targetTr = trs[trs.length - 1];
-          if (!targetTr) {
-            return { ok: false, message: `Measurement input row not found for ${code} (row ${rIdx + 1}).` };
-          }
-          const inputs = Array.from(targetTr.querySelectorAll('input:not([type="hidden"]):not([type="checkbox"]), textarea'))
-            .filter((el) => isVisible(el) && !el.disabled && !el.readOnly);
+            if (rIdx > 0) {
+              // Click the cyan '+' button in the Add/Remove column of the last row (below the red '-' button)
+              const prevCount = trs.length;
+              const lastTr = trs[trs.length - 1];
+              const rowButtons = Array.from(lastTr.querySelectorAll('button, a, .btn, span, i, svg'))
+                .filter((el) => {
+                  if (!isVisible(el)) return false;
+                  const r = el.getBoundingClientRect();
+                  return r.width >= 14 && r.width <= 60 && r.height >= 14 && r.height <= 48 && r.left > vw * 0.80;
+                });
+              let rowPlus = rowButtons.find((el) => {
+                const cls = typeof el.className === 'string' ? el.className : (el.className?.baseVal || '');
+                const txt = (el.innerText || '').trim();
+                const low = `${cls} ${el.getAttribute('title') || ''}`.toLowerCase();
+                return txt === '+' || low.includes('plus') || low.includes('info') || low.includes('primary') || low.includes('add');
+              });
+              if (!rowPlus && rowButtons.length >= 2) {
+                // Bottom-most button in Add/Remove column is always cyan '+' (top is red '-')
+                rowButtons.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top);
+                rowPlus = rowButtons[0];
+              }
+              if (rowPlus) {
+                const smallP = rowPlus.closest('button, a');
+                await clickEl((smallP && smallP.getBoundingClientRect().width <= 64) ? smallP : rowPlus);
+                for (let w = 0; w < 8; w++) {
+                  await sleep(180);
+                  trs = getMeasRows();
+                  if (trs.length > prevCount) break;
+                }
+              }
+            }
 
-          const values = [rData.desc || '', rData.no || '1', rData.l || '', rData.b || '', rData.d || '', rData.cf || ''];
-          for (let ci = 0; ci < Math.min(inputs.length, values.length); ci++) {
-            if (values[ci] !== '') {
-              setNativeValue(inputs[ci], values[ci]);
-              await sleep(50);
+            const targetTr = trs[trs.length - 1];
+            if (!targetTr) {
+              return { ok: false, message: `Measurement input row not found for ${code} (row ${rIdx + 1}).` };
+            }
+            const inputs = Array.from(targetTr.querySelectorAll('input:not([type="hidden"]):not([type="checkbox"]), textarea'))
+              .filter((el) => isVisible(el) && !el.disabled && !el.readOnly);
+
+            // Exact SECURE v2 columns: [0]=Item Description, [1]=No, [2]=L/D/A, [3]=B/B, [4]=D/C, [5]=Cf
+            const values = [rData.desc || '', rData.no || '1', rData.l || '', rData.b || '', rData.d || '', rData.cf || ''];
+            for (let ci = 0; ci < Math.min(inputs.length, values.length); ci++) {
+              if (values[ci] !== '') {
+                setNativeValue(inputs[ci], values[ci]);
+                await sleep(60);
+              }
             }
           }
-        }
 
-        const saveBtn = findRightPanelButtonByText([/save\s*measurement/i, /^save$/i, /update/i]);
-        if (!saveBtn) {
-          return { ok: false, message: `Save Measurements button not found for ${code}.` };
+          const saveBtn = await waitForRightBtn([/save\s*measurement/i, /^save$/i, /update/i], 10);
+          if (!saveBtn) {
+            return { ok: false, message: `Save Measurements button not found for ${code}.` };
+          }
+          await clickEl(saveBtn);
+          await waitForPortalIdle(1000, 20000);
+          await dismissSwalIfAny();
+          blurKeyboard();
+          return { ok: true };
+        };
+
+        const normalRows = rowsData.filter((r) => !r.isDeduction);
+        const deductionRows = rowsData.filter((r) => !!r.isDeduction);
+
+        if (normalRows.length > 0) {
+          const res1 = await fillBatch(normalRows, false);
+          if (!res1.ok) return res1;
         }
-        await clickEl(saveBtn);
-        await waitForPortalIdle(1000, 20000);
-        await dismissSwalIfAny();
-        blurKeyboard();
+        if (deductionRows.length > 0) {
+          const res2 = await fillBatch(deductionRows, true);
+          if (!res2.ok) return res2;
+        }
         return { ok: true, message: `Saved ${rowsData.length} measurement row(s) for ${code}` };
       }
 
@@ -1154,7 +1246,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V13__ = true;
+      window.__SECURE_AI_IPAD_V14__ = true;
     })();
     """#
 }
