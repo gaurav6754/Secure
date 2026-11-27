@@ -241,7 +241,7 @@ final class AutomationController: ObservableObject {
                     }
 
                     // Compare actual net quantity on SECURE portal vs PDF expected quantity!
-                    let expectedQty = item.totalQuantity
+                    let expectedQty = item.totalQty
                     let portalQty = pItem.quantity
                     let tol = max(0.05, expectedQty * 0.005)
                     if expectedQty > 0 && abs(portalQty - expectedQty) > tol {
