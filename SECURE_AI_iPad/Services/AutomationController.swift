@@ -187,7 +187,7 @@ final class AutomationController: ObservableObject {
         }
         appendLog("🔍 Scanning opened SECURE estimate in built-in browser...")
         do {
-            let raw = try await browser.callAutomationJS("return window.__SECURE_AI_IPAD__.scrapeCurrentEstimate();")
+            let raw = try await browser.callAutomationJS("return await window.__SECURE_AI_IPAD__.scrapeCurrentEstimate();")
             guard let dict = raw as? [String: Any],
                   let data = try? JSONSerialization.data(withJSONObject: dict),
                   let scraped = try? JSONDecoder().decode(PortalScrapedEstimate.self, from: data) else {

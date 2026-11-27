@@ -3,6 +3,7 @@ import SwiftUI
 struct VerifyFixView: View {
     @EnvironmentObject var browser: EmbeddedBrowserStore
     @EnvironmentObject var automation: AutomationController
+    let onStartRepairRequested: () -> Void
     @State private var isScanning = false
 
     var body: some View {
@@ -68,7 +69,7 @@ struct VerifyFixView: View {
                         }
 
                         Button {
-                            automation.runRepairUnits(browser: browser)
+                            onStartRepairRequested()
                         } label: {
                             Label("Auto-Fix Errors (Delete & Re-Add)", systemImage: "wrench.and.screwdriver.fill")
                                 .font(.system(size: 13, weight: .bold))

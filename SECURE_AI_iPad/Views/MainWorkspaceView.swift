@@ -217,7 +217,15 @@ struct MainWorkspaceView: View {
                         }
                     )
                 case .verify:
-                    VerifyFixView()
+                    VerifyFixView(onStartRepairRequested: {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                            showSidebar = false
+                        }
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 420_000_000)
+                            automation.runRepairUnits(browser: browser)
+                        }
+                    })
                 case .settings:
                     SettingsLicenseView(geminiApiKey: $geminiApiKey, showAddLoginSheet: $showAddLoginSheet)
                 }

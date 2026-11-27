@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V19__) return;
+      if (window.__SECURE_AI_IPAD_V20__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -106,15 +106,24 @@ enum SecureAutomationJS {
       }
 
       function sanitizeSecureDesc(raw, maxLen = 95) {
-        return String(raw == null ? '' : raw)
+        let s = String(raw == null ? '' : raw)
           .replace(/[\r\n\t]+/g, ' ')
           .replace(/:/g, '-')
           .replace(/[×xX](?=\s*\d)/g, 'X')
           .replace(/[–—]/g, '-')
           .replace(/[^A-Za-z0-9 .+\-*()/]/g, ' ')
           .replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, maxLen);
+          .trim();
+        // Strip leading lone serial number like "1 GW PCC..." -> "GW PCC..."
+        s = s.replace(/^\d{1,2}\s+(?!MM\b|CM\b|FT\b|IN\b|M\b|SQM\b|CUM\b|KG\b)(?=[A-Za-z])/i, '');
+        // SECURE v2 rejects Item Description / Heading starting with a digit or symbol!
+        // Always guarantee it starts with an alphabet letter [A-Za-z].
+        if (!s || /^\d+$/.test(s)) {
+          s = 'Work';
+        } else if (!/^[A-Za-z]/.test(s)) {
+          s = 'Item ' + s;
+        }
+        return s.slice(0, maxLen).trim();
       }
 
       function setNativeValue(el, value, shouldBlur = true) {
@@ -1276,39 +1285,77 @@ enum SecureAutomationJS {
         return { ok: true, message: `Added Lump Sum: ${keyword} (₹${amount})` };
       }
 
-      function scrapeCurrentEstimate() {
-        const vw = window.innerWidth;
-        const rows = [];
-        for (const el of queryAllAcrossDocs('div, li, tr')) {
+      async function scrapeCurrentEstimate() {
+        const vw = window.innerWidth || 1024;
+        const allRows = [];
+        const seenRows = new Set();
+
+        for (const el of queryAllAcrossDocs('div, li, tr, mat-expansion-panel-header')) {
           if (!isVisible(el)) continue;
           const r = el.getBoundingClientRect();
-          if (r.left > vw * 0.45 || r.height > 120) continue;
+          if (r.left > vw * 0.46 || r.width < 120 || r.height > 125) continue;
           const txt = (el.innerText || '').trim();
-          if (txt.includes('Analysis of Rates') && el.querySelectorAll('svg, i, img, button').length >= 2) {
-            rows.push(el);
+          if (!txt.includes('Analysis of Rates')) continue;
+          if (txt.includes('Add Appendix/Description') || txt.includes('No Appendix Added')) continue;
+          let row = el;
+          for (let step = 0; step < 6 && row.parentElement; step++) {
+            const curR = row.getBoundingClientRect();
+            const pr = row.parentElement.getBoundingClientRect();
+            if (curR.width >= vw * 0.28 && curR.height <= 120) break;
+            if (pr.width <= vw * 0.48 && pr.height <= 125) row = row.parentElement;
+            else break;
+          }
+          if (!seenRows.has(row)) {
+            seenRows.add(row);
+            allRows.push(row);
           }
         }
-        const headings = rows.map((row, idx) => {
-          const rawTitle = (row.innerText || '').split('\n')[0].trim();
-          const container = row.parentElement || row;
+
+        const rows = allRows
+          .filter((row) => !allRows.some((other) => other !== row && row.contains(other)))
+          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+
+        const codeRe = /\b(\d{1,2}(?:\.TM)?(?:\.[A-Za-z0-9]+){2,6})\b/gi;
+        const headings = [];
+
+        for (let idx = 0; idx < rows.length; idx++) {
+          const row = rows[idx];
+          try { row.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+          await sleep(100);
+
+          const getCardContainer = () => row.closest('mat-expansion-panel, .card, .accordion-item, li') || row.parentElement || row;
+          let container = getCardContainer();
+          let text = container.innerText || '';
+          codeRe.lastIndex = 0;
+
+          // If this heading card is collapsed (no SOR codes visible yet), click it to expand so Verify & Fix sees all items!
+          if (!codeRe.test(text) && !text.includes('No Specification Added')) {
+            await clickEl(row);
+            await sleep(380);
+            container = getCardContainer();
+            text = container.innerText || '';
+          }
+
+          const rawTitle = (row.innerText || '').split('\n')[0].replace(/See more.*/i, '').trim();
           const items = [];
-          const codeRe = /\b(\d{1,2}(?:\.TM)?(?:\.[A-Za-z0-9]+){2,6})\b/gi;
-          const text = container.innerText || '';
-          const seen = new Set();
+          const seenCodes = new Set();
+          codeRe.lastIndex = 0;
           let m;
           while ((m = codeRe.exec(text)) !== null) {
             const c = m[1].toUpperCase();
-            if (!seen.has(c)) {
-              seen.add(c);
+            if (!seenCodes.has(c)) {
+              seenCodes.add(c);
               items.push({ code: c, description: c, quantity: 0, amount: 0 });
             }
           }
-          return { index: idx, text: rawTitle, items };
-        });
+          headings.push({ index: idx, text: rawTitle, items });
+        }
+
+        hideCursor();
 
         const lumpSums = [];
         const bodyText = document.body.innerText || '';
-        const lumpLines = bodyText.split('\n').filter((l) => /lump\s*sum|conveyance|display board|cess|contingenc/i.test(l));
+        const lumpLines = bodyText.split('\n').filter((l) => /lump\s*sum|conveyance|display board|cess|contingenc|\bgst\b/i.test(l));
         for (const l of lumpLines.slice(0, 12)) {
           const numMatch = l.match(/(\d+(?:,\d+)*(?:\.\d+)?)/);
           lumpSums.push({ description: l.trim(), amount: numMatch ? parseFloat(numMatch[1].replace(/,/g, '')) : 0 });
@@ -1344,7 +1391,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V19__ = true;
+      window.__SECURE_AI_IPAD_V20__ = true;
     })();
     """#
 }
