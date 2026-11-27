@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V10__) return;
+      if (window.__SECURE_AI_IPAD_V11__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -535,6 +535,112 @@ enum SecureAutomationJS {
         return { ok: true, message: `Added heading: ${headingText}` };
       }
 
+      async function selectHybridDropdown({ panelSide, triggerMatchers, optionMatcher, root = null }) {
+        const vw = window.innerWidth || 1024;
+        const vh = window.innerHeight || 768;
+        const inPanel = (r) => {
+          if (panelSide === 'right') return r.left > vw * 0.36;
+          if (panelSide === 'left') return r.left < vw * 0.48;
+          return true;
+        };
+
+        // 1. Try native <select> first
+        const nativeSelects = (root ? Array.from(root.querySelectorAll('select')) : queryAllAcrossDocs('select'))
+          .filter((s) => isVisible(s) && !s.disabled && inPanel(s.getBoundingClientRect()));
+        for (const sel of nativeSelects) {
+          const allTxt = Array.from(sel.options).map((o) => o.text || '').join(' ').toLowerCase();
+          if (triggerMatchers.some((re) => re.test(allTxt)) || nativeSelects.length === 1) {
+            const opts = Array.from(sel.options);
+            const chosen = opts.find((o) => optionMatcher((o.text || '').trim()));
+            if (chosen) {
+              try { sel.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+              await moveCursorAndRipple(sel);
+              sel.selectedIndex = chosen.index;
+              sel.value = chosen.value;
+              sel.dispatchEvent(new Event('input', { bubbles: true }));
+              sel.dispatchEvent(new Event('change', { bubbles: true }));
+              await waitForPortalIdle(900, 15000);
+              return { ok: true, selectedText: (chosen.text || '').trim(), mode: 'native-select' };
+            }
+          }
+        }
+
+        // 2. Custom Angular / Material / ng-select / Bootstrap dropdown trigger
+        const triggerCandidates = (root
+          ? Array.from(root.querySelectorAll('mat-select, ng-select, p-dropdown, [role="combobox"], [role="listbox"], button, div, span'))
+          : queryAllAcrossDocs('mat-select, ng-select, p-dropdown, [role="combobox"], [role="listbox"], button, div, span')
+        ).filter((el) => {
+          if (!isVisible(el) || el.disabled) return false;
+          const r = el.getBoundingClientRect();
+          if (!inPanel(r) || r.width < 110 || r.height < 22 || r.height > 72 || r.top > vh * 0.65) return false;
+          const t = (el.innerText || el.textContent || '').trim();
+          if (t.length === 0 || t.length > 90) return false;
+          return triggerMatchers.some((re) => re.test(t));
+        }).sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
+
+        if (triggerCandidates.length === 0) {
+          return { ok: false, message: 'Dropdown trigger not found' };
+        }
+
+        const trigger = triggerCandidates[0];
+        const currentTxt = (trigger.innerText || trigger.textContent || '').trim();
+        if (optionMatcher(currentTxt)) {
+          return { ok: true, selectedText: currentTxt, mode: 'already-selected' };
+        }
+
+        // Open the custom dropdown popup
+        await clickEl(trigger);
+        await sleep(400);
+
+        const findMatchingOption = () => {
+          const optNodes = queryAllAcrossDocs('mat-option, [role="option"], .ng-option, .p-dropdown-item, .dropdown-item, li, div, span')
+            .filter((el) => {
+              if (!isVisible(el) || el === trigger || trigger.contains(el)) return false;
+              const r = el.getBoundingClientRect();
+              if (!inPanel(r) || r.height < 16 || r.height > 70 || r.width < 90) return false;
+              const t = (el.innerText || el.textContent || '').trim();
+              if (t.length === 0 || t.length > 100) return false;
+              return optionMatcher(t);
+            })
+            .sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
+          return optNodes[0] || null;
+        };
+
+        let optEl = findMatchingOption();
+
+        // If option isn't visible yet, scroll any open dropdown overlay/list container down to bottom (where 54 - MGNREGA options live)
+        if (!optEl) {
+          const scrollables = queryAllAcrossDocs('.cdk-overlay-pane, .mat-select-panel, .mat-mdc-select-panel, .ng-dropdown-panel-items, .dropdown-menu, ul, div')
+            .filter((el) => {
+              if (!isVisible(el)) return false;
+              const r = el.getBoundingClientRect();
+              if (!inPanel(r) || r.height < 60) return false;
+              return el.scrollHeight > el.clientHeight + 20;
+            });
+          for (const sc of scrollables) {
+            // Step-scroll down so even virtualized lists render the bottom options
+            for (let step = 1; step <= 6; step++) {
+              sc.scrollTop = Math.round((sc.scrollHeight * step) / 6);
+              sc.dispatchEvent(new Event('scroll', { bubbles: true }));
+              await sleep(160);
+              optEl = findMatchingOption();
+              if (optEl) break;
+            }
+            if (optEl) break;
+          }
+        }
+
+        if (!optEl) {
+          return { ok: false, message: 'Target option not found inside open dropdown list' };
+        }
+
+        try { optEl.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+        await sleep(140);
+        await clickEl(optEl);
+        await waitForPortalIdle(950, 15000);
+        return { ok: true, selectedText: (optEl.innerText || optEl.textContent || '').trim(), mode: 'custom-dropdown' };
+      }
+
       function findSearchButtonNear(searchBox) {
         if (!searchBox) return null;
         const sb = searchBox.getBoundingClientRect();
@@ -585,17 +691,7 @@ enum SecureAutomationJS {
           }) || searchInputs[0] || null;
         };
 
-        const findRightSubheadSelect = () => {
-          const selects = queryAllAcrossDocs('select')
-            .filter((s) => isVisible(s) && !s.disabled && s.getBoundingClientRect().left > vw * 0.38);
-          return selects.find((s) => {
-            const txt = Array.from(s.options).map((o) => o.text).join(' ').toLowerCase();
-            return txt.includes('sub head') || txt.includes('subhead') || txt.includes('mgnrega') || txt.includes('54 -') || txt.includes('54-') || txt.includes('earth');
-          }) || selects[0] || null;
-        };
-
         const plusCands = findAddItemCandidatesInRow(row);
-        // Also add direct elementFromPoint probe on the exact ⊕ coordinates in the heading header bar (around 72-76% of row width)
         const rr = row.getBoundingClientRect();
         for (const frac of [0.74, 0.71, 0.77, 0.68]) {
           const px = rr.left + rr.width * frac;
@@ -614,46 +710,36 @@ enum SecureAutomationJS {
         }
 
         let searchBox = null;
-        let subheadSelect = null;
         for (const cand of plusCands.slice(0, 4)) {
           await clickEl(cand);
           await waitForPortalIdle(700, 12000);
           for (let w = 0; w < 6; w++) {
-            subheadSelect = findRightSubheadSelect();
             searchBox = findRightSearchBox();
-            if (searchBox || subheadSelect) break;
+            if (searchBox) break;
             await sleep(200);
           }
-          if (searchBox || subheadSelect) break;
+          if (searchBox) break;
         }
 
-        // Select the right Sub Head Type (54 - MGNREGA Bihar Data-TM vs 54 - MGNREGA Bihar Data)
-        if (subheadSelect) {
-          try { subheadSelect.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
-          const chapter = String(code).split('.')[0].trim();
-          const opts = Array.from(subheadSelect.options);
-          let chosen = null;
-          if (isTM) {
-            chosen = opts.find((o) => {
-              const t = (o.text || '').toUpperCase();
-              return t.includes('54') && (t.includes('TM') || t.includes('DATA-TM'));
-            });
-          } else if (chapter === '54') {
-            chosen = opts.find((o) => {
-              const t = (o.text || '').toUpperCase();
-              return t.includes('54') && !t.includes('TM') && (t.includes('BIHAR') || t.includes('MGNREGA') || t.startsWith('54'));
-            });
-          } else {
-            chosen = opts.find((o) => (o.text || '').trim().startsWith(chapter + ' ') || (o.text || '').trim().startsWith(chapter + '-'));
+        // Select the right Sub Head Type (handles BOTH custom dropdown and native <select>!)
+        const chapter = String(code).split('.')[0].trim();
+        const subheadRes = await selectHybridDropdown({
+          panelSide: 'right',
+          triggerMatchers: [/select\s*sub\s*head/i, /sub\s*head/i, /mgnrega/i, /^\s*\d{1,2}\s*-\s*/i],
+          optionMatcher: (txt) => {
+            const up = txt.toUpperCase();
+            if (up.includes('SELECT SUB HEAD')) return false;
+            if (isTM) {
+              return up.includes('54') && (up.includes('TM') || up.includes('DATA-TM') || up.includes('DATA- TM'));
+            }
+            if (chapter === '54') {
+              return up.includes('54') && !up.includes('TM') && (up.includes('BIHAR') || up.includes('MGNREGA'));
+            }
+            return up.startsWith(chapter + ' -') || up.startsWith(chapter + '-');
           }
-          if (chosen) {
-            await moveCursorAndRipple(subheadSelect);
-            subheadSelect.selectedIndex = chosen.index;
-            subheadSelect.value = chosen.value;
-            subheadSelect.dispatchEvent(new Event('input', { bubbles: true }));
-            subheadSelect.dispatchEvent(new Event('change', { bubbles: true }));
-            await waitForPortalIdle(900, 15000);
-          }
+        });
+        if (!subheadRes.ok) {
+          return { ok: false, message: `Could not select Sub Head Type for ${code} (${subheadRes.message}).` };
         }
 
         if (!searchBox) searchBox = findRightSearchBox();
@@ -858,24 +944,27 @@ enum SecureAutomationJS {
           await sleep(450);
         }
 
-        const selects = Array.from(form.querySelectorAll('select')).filter((s) => isVisible(s) && !s.disabled);
-        const lumpSelect = selects.find((s) => {
-          const txt = Array.from(s.options).map((o) => o.text).join(' ').toLowerCase();
-          return txt.includes('lump') || txt.includes('conveyance') || txt.includes('miscellaneous') || txt.includes('display board');
-        }) || selects[0];
-
-        if (!lumpSelect) {
-          return { ok: false, message: 'Lump sum Type dropdown not found.' };
-        }
-
         const kwLow = String(keyword || 'Miscellaneous').toLowerCase();
-        const opt = Array.from(lumpSelect.options).find((o) => (o.text || '').toLowerCase().includes(kwLow))
-          || Array.from(lumpSelect.options).find((o) => (o.text || '').toLowerCase().includes('miscellaneous'));
-        if (opt) {
-          await moveCursorAndRipple(lumpSelect);
-          lumpSelect.value = opt.value;
-          lumpSelect.dispatchEvent(new Event('change', { bubbles: true }));
-          await sleep(500);
+        const lumpRes = await selectHybridDropdown({
+          panelSide: 'left',
+          root: form,
+          triggerMatchers: [/select\s*lump\s*sum/i, /lump\s*sum/i, /conveyance/i, /miscellaneous/i, /display\s*board/i, /gst/i],
+          optionMatcher: (txt) => {
+            const low = txt.toLowerCase();
+            if (low.includes('select lump sum')) return false;
+            return low.includes(kwLow);
+          }
+        });
+        if (!lumpRes.ok) {
+          const fallbackRes = await selectHybridDropdown({
+            panelSide: 'left',
+            root: form,
+            triggerMatchers: [/select\s*lump\s*sum/i, /lump\s*sum/i],
+            optionMatcher: (txt) => txt.toLowerCase().includes('miscellaneous')
+          });
+          if (!fallbackRes.ok) {
+            return { ok: false, message: `Lump sum Type dropdown not selected (${lumpRes.message}).` };
+          }
         }
 
         const inputs = Array.from(form.querySelectorAll('input[type="text"], input[type="number"], input:not([type]), textarea'))
@@ -978,7 +1067,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V10__ = true;
+      window.__SECURE_AI_IPAD_V11__ = true;
     })();
     """#
 }
