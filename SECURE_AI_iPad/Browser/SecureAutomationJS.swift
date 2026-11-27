@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V12__) return;
+      if (window.__SECURE_AI_IPAD_V13__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -586,17 +586,44 @@ enum SecureAutomationJS {
             return (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim();
           };
 
+          // Find vertical band of 'Specification / Activity' when targeting the right panel
+          let specBandMinY = 0;
+          let specBandMaxY = vh * 0.65;
+          if (panelSide === 'right') {
+            for (const n of queryAllAcrossDocs('h4, h5, h6, div, span, p, label')) {
+              if (!isVisible(n)) continue;
+              const nt = (n.textContent || '').trim();
+              if (nt.length < 40 && nt.toLowerCase().includes('specification / activity')) {
+                const sr = n.getBoundingClientRect();
+                if (sr.left > vw * 0.36 && sr.height < 60) {
+                  specBandMinY = Math.max(0, sr.top - 30);
+                  specBandMaxY = sr.bottom + 70;
+                  break;
+                }
+              }
+            }
+          }
+
           const triggerCandidates = (root
             ? Array.from(root.querySelectorAll('input, select, mat-select, ng-select, p-dropdown, [role="combobox"], [role="listbox"], button, div, span'))
             : queryAllAcrossDocs('input, select, mat-select, ng-select, p-dropdown, [role="combobox"], [role="listbox"], button, div, span')
           ).filter((el) => {
             if (!isVisible(el) || el.disabled) return false;
             const r = el.getBoundingClientRect();
-            if (!inPanel(r) || r.width < 110 || r.height < 20 || r.height > 72 || r.top > vh * 0.65) return false;
+            if (!inPanel(r) || r.width < 110 || r.height < 20 || r.height > 72) return false;
+            if (r.top < specBandMinY || r.top > specBandMaxY) return false;
             const t = getElLabel(el);
             if (t.length === 0 || t.length > 90) return false;
             return triggerMatchers.some((re) => re.test(t));
-          }).sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
+          }).sort((a, b) => {
+            // Prefer exact 'Select Sub Head' / 'MGNREGA' / 'Select Lump sum' matches first, then smallest box
+            const ta = getElLabel(a).toLowerCase();
+            const tb = getElLabel(b).toLowerCase();
+            const pa = (ta.includes('select sub head') || ta.includes('mgnrega') || ta.includes('select lump')) ? 0 : 1;
+            const pb = (tb.includes('select sub head') || tb.includes('mgnrega') || tb.includes('select lump')) ? 0 : 1;
+            if (pa !== pb) return pa - pb;
+            return (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height);
+          });
 
           // 3. Direct coordinate anchor for Right Panel '-- Select Sub Head Type --' (same row as 'Specification / Activity')
           if (triggerCandidates.length === 0 && panelSide === 'right') {
@@ -785,7 +812,7 @@ enum SecureAutomationJS {
         const chapter = String(code).split('.')[0].trim();
         const subheadRes = await selectHybridDropdown({
           panelSide: 'right',
-          triggerMatchers: [/select\s*sub\s*head/i, /sub\s*head/i, /mgnrega/i, /^\s*\d{1,2}\s*-\s*/i],
+          triggerMatchers: [/select\s*sub\s*head/i, /sub\s*head/i, /mgnrega/i, /^\s*\d{1,2}\s*-\s*[A-Za-z]{3,}/i],
           optionMatcher: (txt) => {
             const up = txt.toUpperCase();
             if (up.includes('SELECT SUB HEAD')) return false;
@@ -1127,7 +1154,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V12__ = true;
+      window.__SECURE_AI_IPAD_V13__ = true;
     })();
     """#
 }
