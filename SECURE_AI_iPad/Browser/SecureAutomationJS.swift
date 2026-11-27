@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V22__) return;
+      if (window.__SECURE_AI_IPAD_V23__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -43,7 +43,7 @@ enum SecureAutomationJS {
           cur.style.opacity = '1';
           cur.style.left = `${cx}px`;
           cur.style.top = `${cy}px`;
-          await sleep(160);
+          await sleep(Math.max(45, Math.round(160 / (window.__SECURE_AI_SPEED__ || 1))));
           const ring = doc.createElement('div');
           Object.assign(ring.style, {
             position: 'fixed', left: `${cx - 14}px`, top: `${cy - 14}px`, width: '28px', height: '28px',
@@ -224,37 +224,39 @@ enum SecureAutomationJS {
       }
 
       function isPortalLoading() {
-        // Check real SECURE v2 loading overlays (strictly ignore leftover .swal2-loader after SweetAlert2 closes!)
-        const selectors = [
-          '.ngx-spinner-overlay', '.blockUI', '#preloader',
-          '.mat-progress-bar', '.progress-bar-animated', '.spinner-border', '.spinner-grow'
-        ];
-        for (const sel of selectors) {
-          for (const n of queryAllAcrossDocs(sel)) {
-            if (n.closest && n.closest('.swal2-container')) continue;
-            if (!isVisible(n)) continue;
-            const r = n.getBoundingClientRect();
-            if (r.width >= 10 && r.height >= 4 && r.top >= 0 && r.top < window.innerHeight) {
-              return true;
-            }
-          }
+        const vw = window.innerWidth || 1024;
+        const vh = window.innerHeight || 768;
+        // 1. Full-screen spinner overlay (only if genuinely covering >50% of screen)
+        for (const n of queryAllAcrossDocs('.ngx-spinner-overlay, .blockUI')) {
+          if (n.closest && n.closest('.swal2-container')) continue;
+          if (!isVisible(n)) continue;
+          const r = n.getBoundingClientRect();
+          if (r.width > vw * 0.5 && r.height > vh * 0.5) return true;
         }
+        // 2. Real SECURE v2 centered "Loading" modal text
         for (const s of queryAllAcrossDocs('div, span, p')) {
           if (s.children.length === 0 && isVisible(s)) {
             if (s.closest && s.closest('.swal2-container')) continue;
             const t = (s.textContent || '').trim().toLowerCase();
-            if (t === 'loading' || t === 'loading...' || t === 'please wait...') return true;
+            if (t === 'loading' || t === 'loading...' || t === 'please wait...') {
+              const r = s.getBoundingClientRect();
+              if (r.left > vw * 0.20 && r.right < vw * 0.80 && r.top > vh * 0.15 && r.bottom < vh * 0.85) {
+                return true;
+              }
+            }
           }
         }
         return false;
       }
 
-      async function waitForPortalIdle(minWaitMs = 700, maxWaitMs = 20000) {
+      async function waitForPortalIdle(minWaitMs = 700, maxWaitMs = 12000) {
+        const spd = Math.max(1, Math.min(5, window.__SECURE_AI_SPEED__ || 1));
+        const scaledMin = Math.max(220, Math.round(minWaitMs / Math.sqrt(spd)));
         const start = Date.now();
-        await sleep(minWaitMs);
+        await sleep(scaledMin);
         while (Date.now() - start < maxWaitMs) {
           if (!isPortalLoading()) return true;
-          await sleep(250);
+          await sleep(180);
         }
         return false;
       }
@@ -848,6 +850,9 @@ enum SecureAutomationJS {
         if (!row) {
           return { ok: false, message: `Heading "${headingText}" (#${headingIndex + 1}) not found in left panel.` };
         }
+        // CRITICAL: Always scroll heading into view first (fixes Heading 9/10+ off-screen after Delete!)
+        try { row.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+        await sleep(180);
 
         const vw = window.innerWidth || 1024;
         const findRightSearchBox = () => {
@@ -999,6 +1004,8 @@ enum SecureAutomationJS {
         if (!row) {
           return { ok: false, message: `Heading "${headingText}" not found for measurements of ${code}.` };
         }
+        try { row.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+        await sleep(140);
 
         const escapeReM = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const codeUpperM = String(code).trim().toUpperCase();
@@ -1466,7 +1473,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V22__ = true;
+      window.__SECURE_AI_IPAD_V23__ = true;
     })();
     """#
 }

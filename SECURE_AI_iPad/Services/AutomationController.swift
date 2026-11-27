@@ -288,6 +288,7 @@ final class AutomationController: ObservableObject {
     }
 
     private func execute(unit: AutomationUnit, browser: EmbeddedBrowserStore) async throws -> (Bool, String) {
+        _ = try? await browser.callAutomationJS("window.__SECURE_AI_SPEED__ = spd;", arguments: ["spd": speed.multiplier])
         switch unit.kind {
         case .addHeading:
             let res = try await browser.callAutomationJS(
