@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V24__) return;
+      if (window.__SECURE_AI_IPAD_V25__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -33,10 +33,11 @@ enum SecureAutomationJS {
       }
 
       async function moveCursorAndRipple(el) {
-        if (!el) return { cx: 0, cy: 0 };
+        if (!el || !el.isConnected) return { cx: 0, cy: 0 };
         const doc = el.ownerDocument || document;
         const cur = ensureCursor(doc);
         const r = el.getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) return { cx: 0, cy: 0 };
         const cx = Math.max(4, Math.min((doc.defaultView?.innerWidth || window.innerWidth) - 4, r.left + r.width / 2));
         const cy = Math.max(4, Math.min((doc.defaultView?.innerHeight || window.innerHeight) - 4, r.top + r.height / 2));
         if (cur) {
@@ -317,7 +318,10 @@ enum SecureAutomationJS {
             const txt = (b.innerText || '').trim().toLowerCase();
             if (txt.includes('yes, delete') || txt.includes('yes delete') || (b.classList.contains('swal2-confirm') && txt.includes('yes'))) {
               await clickEl(b);
-              await waitForPortalIdle(900, 20000);
+              // Wait real time for SECURE delete API + Angular list re-render so next step never grabs a stale detached DOM node!
+              await sleep(1100);
+              await waitForPortalIdle(600, 12000);
+              await sleep(300);
               return { ok: true, message: 'Confirmed SweetAlert2 delete' };
             }
           }
@@ -887,15 +891,27 @@ enum SecureAutomationJS {
         }
 
         let searchBox = null;
-        for (const cand of plusCands.slice(0, 5)) {
-          await clickEl(cand);
-          await waitForPortalIdle(550, 10000);
-          for (let w = 0; w < 6; w++) {
-            searchBox = findRightSearchBox();
-            if (searchBox) break;
-            await sleep(180);
+        for (let pass = 0; pass < 2 && !searchBox; pass++) {
+          const liveRow = pass === 0 ? row : findHeadingRowByTextOrIndex(headingText, headingIndex);
+          if (!liveRow) break;
+          if (pass > 0) {
+            try { liveRow.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+            await sleep(350);
           }
-          if (searchBox) break;
+          const liveCands = pass === 0 ? plusCands : findAddItemCandidatesInRow(liveRow);
+          for (const cand of liveCands.slice(0, 5)) {
+            if (!cand || !cand.isConnected) continue;
+            const cr = cand.getBoundingClientRect();
+            if (cr.width < 6 || cr.height < 6 || cr.top < 40) continue;
+            await clickEl(cand);
+            await waitForPortalIdle(550, 10000);
+            for (let w = 0; w < 6; w++) {
+              searchBox = findRightSearchBox();
+              if (searchBox) break;
+              await sleep(180);
+            }
+            if (searchBox) break;
+          }
         }
         if (!searchBox) {
           return { ok: false, message: `Could not open Specification/Activity from ⊕ on "${headingText}".` };
@@ -1480,7 +1496,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V24__ = true;
+      window.__SECURE_AI_IPAD_V25__ = true;
     })();
     """#
 }
