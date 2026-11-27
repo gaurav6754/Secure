@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V14__) return;
+      if (window.__SECURE_AI_IPAD_V15__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -859,26 +859,57 @@ enum SecureAutomationJS {
         }
 
         const codeUpper = String(code).trim().toUpperCase();
+        const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const exactCodeRe = new RegExp('(^|[^A-Z0-9.])' + escapeRe(codeUpper) + '($|[^A-Z0-9.])');
+
         let matchedRow = null;
+        let matchedChk = null;
         for (let w = 0; w < 12; w++) {
-          const rows = queryAllAcrossDocs('tr, .list-group-item, .search-result-row, div')
-            .filter((r) => isVisible(r) && r.getBoundingClientRect().left > vw * 0.35 && r.getBoundingClientRect().height < 240 && r.querySelector('input[type="checkbox"]'));
-          matchedRow = rows.find((r) => (r.innerText || '').toUpperCase().includes(codeUpper));
-          if (matchedRow) break;
+          // ONLY inspect actual table rows (tr) — NEVER outer wrapper divs that contain hidden rows!
+          const trs = queryAllAcrossDocs('table tbody tr, tr')
+            .filter((r) => {
+              if (!isVisible(r)) return false;
+              const rr = r.getBoundingClientRect();
+              if (rr.left <= vw * 0.35 || rr.height < 24 || rr.height > 220) return false;
+              const cb = r.querySelector('input[type="checkbox"]');
+              const target = getCheckboxTarget(cb);
+              if (!cb || !target) return false;
+              const cr = target.getBoundingClientRect();
+              return cr.left > vw * 0.35 && cr.top > 80 && cr.width > 4 && cr.height > 4;
+            })
+            .sort((a, b) => a.getBoundingClientRect().height - b.getBoundingClientRect().height);
+
+          // Exact code match first (e.g. 54.1.1A never collides with 54.1.1)
+          matchedRow = trs.find((r) => {
+            const cells = Array.from(r.querySelectorAll('td')).map((td) => (td.innerText || '').trim().toUpperCase());
+            return cells.some((c) => c === codeUpper) || exactCodeRe.test((r.innerText || '').toUpperCase());
+          });
+          if (!matchedRow) {
+            matchedRow = trs.find((r) => (r.innerText || '').toUpperCase().includes(codeUpper));
+          }
+          if (matchedRow) {
+            matchedChk = matchedRow.querySelector('input[type="checkbox"]');
+            break;
+          }
           await sleep(250);
         }
 
-        if (!matchedRow) {
+        if (!matchedRow || !matchedChk) {
           const cancelBtn = findRightPanelButtonByText([/cancel/i, /close/i]);
           if (cancelBtn) await clickEl(cancelBtn);
           await sleep(300);
           return { ok: true, skipped: true, message: `Code ${code} not in search results (already present). Closed cleanly.` };
         }
 
-        const chk = matchedRow.querySelector('input[type="checkbox"]');
-        if (chk && !chk.checked) {
-          await clickEl(getCheckboxTarget(chk) || chk);
-          await sleep(250);
+        const chkTarget = getCheckboxTarget(matchedChk) || matchedChk;
+        if (!matchedChk.checked) {
+          await clickEl(chkTarget);
+          await sleep(260);
+        }
+        if (!matchedChk.checked) {
+          // Secondary fallback if custom label absorbed the click
+          await clickEl(matchedChk);
+          await sleep(220);
         }
 
         const saveSpecBtn = findRightPanelButtonByText([/^save$/i, /save/i, /add\s*selected/i, /add\s*item/i, /^add$/i, /submit/i]);
@@ -900,16 +931,19 @@ enum SecureAutomationJS {
           return { ok: false, message: `Heading "${headingText}" not found for measurements of ${code}.` };
         }
 
+        const escapeReM = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const codeUpperM = String(code).trim().toUpperCase();
+        const exactItemRe = new RegExp('(^|[^A-Z0-9.])' + escapeReM(codeUpperM) + '($|[^A-Z0-9.])');
+
         const findItemRow = () => {
           const container = row.parentElement?.parentElement || row.parentElement || document;
-          const codeUpper = String(code).toUpperCase();
           const nodes = Array.from(container.querySelectorAll('div, tr, li'))
             .filter((n) => {
               if (!isVisible(n)) return false;
               const r = n.getBoundingClientRect();
               if (r.left > vw * 0.44 || r.height > 120 || r.height < 18) return false;
               const t = (n.innerText || '').toUpperCase();
-              return t.includes(codeUpper) && !t.includes('ANALYSIS OF RATES');
+              return exactItemRe.test(t) && !t.includes('ANALYSIS OF RATES');
             })
             .sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
           if (nodes.length > 0) {
@@ -1246,7 +1280,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V14__ = true;
+      window.__SECURE_AI_IPAD_V15__ = true;
     })();
     """#
 }
