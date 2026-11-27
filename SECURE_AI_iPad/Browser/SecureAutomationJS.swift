@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V15__) return;
+      if (window.__SECURE_AI_IPAD_V16__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -870,7 +870,7 @@ enum SecureAutomationJS {
             .filter((r) => {
               if (!isVisible(r)) return false;
               const rr = r.getBoundingClientRect();
-              if (rr.left <= vw * 0.35 || rr.height < 24 || rr.height > 220) return false;
+              if (rr.left <= vw * 0.35 || rr.height < 24 || rr.height > 750) return false;
               const cb = r.querySelector('input[type="checkbox"]');
               const target = getCheckboxTarget(cb);
               if (!cb || !target) return false;
@@ -1161,10 +1161,10 @@ enum SecureAutomationJS {
         const lumpRes = await selectHybridDropdown({
           panelSide: 'left',
           root: form,
-          triggerMatchers: [/select\s*lump\s*sum/i, /lump\s*sum/i, /conveyance/i, /miscellaneous/i, /display\s*board/i, /gst/i],
+          triggerMatchers: [/select\s*lump\s*sum/i, /conveyance/i, /miscellaneous/i, /display\s*board/i, /gst/i, /labour/i, /quality/i, /worksite/i],
           optionMatcher: (txt) => {
             const low = txt.toLowerCase();
-            if (low.includes('select lump sum')) return false;
+            if (low.includes('select lump sum') || low === 'lump sum type' || low.includes('lump sum description')) return false;
             return low.includes(kwLow);
           }
         });
@@ -1172,7 +1172,7 @@ enum SecureAutomationJS {
           const fallbackRes = await selectHybridDropdown({
             panelSide: 'left',
             root: form,
-            triggerMatchers: [/select\s*lump\s*sum/i, /lump\s*sum/i],
+            triggerMatchers: [/select\s*lump\s*sum/i],
             optionMatcher: (txt) => txt.toLowerCase().includes('miscellaneous')
           });
           if (!fallbackRes.ok) {
@@ -1200,7 +1200,7 @@ enum SecureAutomationJS {
           return { ok: false, message: 'Lump sum amount input not found.' };
         }
         await moveCursorAndRipple(amtInput);
-        setNativeValue(amtInput, String(amount));
+        const amtNum = Number(amount); setNativeValue(amtInput, Number.isFinite(amtNum) && amtNum % 1 === 0 ? String(Math.round(amtNum)) : String(amount));
         await sleep(200);
 
         const saveBtn = findButtonByText([/^add$/i, /add\s*lump/i, /save/i], form);
@@ -1280,7 +1280,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V15__ = true;
+      window.__SECURE_AI_IPAD_V16__ = true;
     })();
     """#
 }
