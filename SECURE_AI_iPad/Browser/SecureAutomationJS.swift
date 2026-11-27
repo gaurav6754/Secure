@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V21__) return;
+      if (window.__SECURE_AI_IPAD_V22__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -224,18 +224,24 @@ enum SecureAutomationJS {
       }
 
       function isPortalLoading() {
+        // Check real SECURE v2 loading overlays (strictly ignore leftover .swal2-loader after SweetAlert2 closes!)
         const selectors = [
-          '.spinner', '.loader', '.loading', '.blockUI', '.ngx-spinner-overlay',
-          '.swal2-loading', '[class*="spinner"]', '[class*="loader"]', '#preloader',
-          '.mat-progress-bar', '.progress-bar-animated'
+          '.ngx-spinner-overlay', '.blockUI', '#preloader',
+          '.mat-progress-bar', '.progress-bar-animated', '.spinner-border', '.spinner-grow'
         ];
         for (const sel of selectors) {
           for (const n of queryAllAcrossDocs(sel)) {
-            if (isVisible(n)) return true;
+            if (n.closest && n.closest('.swal2-container')) continue;
+            if (!isVisible(n)) continue;
+            const r = n.getBoundingClientRect();
+            if (r.width >= 10 && r.height >= 4 && r.top >= 0 && r.top < window.innerHeight) {
+              return true;
+            }
           }
         }
         for (const s of queryAllAcrossDocs('div, span, p')) {
           if (s.children.length === 0 && isVisible(s)) {
+            if (s.closest && s.closest('.swal2-container')) continue;
             const t = (s.textContent || '').trim().toLowerCase();
             if (t === 'loading' || t === 'loading...' || t === 'please wait...') return true;
           }
@@ -495,6 +501,11 @@ enum SecureAutomationJS {
         if (targetText.length >= 3) {
           const exact = filtered.find((r) => (r.innerText || '').toUpperCase().includes(targetText));
           if (exact) return exact;
+          const prefix14 = targetText.slice(0, 14).trim();
+          if (prefix14.length >= 6) {
+            const prefMatch = filtered.find((r) => (r.innerText || '').toUpperCase().includes(prefix14));
+            if (prefMatch) return prefMatch;
+          }
         }
         return filtered[headingIndex] || filtered[filtered.length - 1] || null;
       }
@@ -1337,7 +1348,7 @@ enum SecureAutomationJS {
           // If this heading card is collapsed (no SOR codes visible yet), click it to expand so Verify & Fix sees all items!
           if (!codeRe.test(text) && !text.includes('No Specification Added')) {
             await clickEl(row);
-            await sleep(380);
+            await sleep(480);
             container = getCardContainer();
             text = container.innerText || '';
           }
@@ -1358,8 +1369,9 @@ enum SecureAutomationJS {
             seenCodes.add(c);
             const sliceEnd = (mi + 1 < matches.length) ? matches[mi + 1].index : text.length;
             const block = text.slice(matches[mi].index, sliceEnd);
-            // Match quantity like "726.319 sqm @" or "80.0 no @" or "21.233 cum @"
-            const qtyM = block.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:cum|sqm|metre|meter|rmt|kg|no|nos|day|each|ls|mt|qtl)\b/i);
+            // Anchor strictly before '@' (e.g. "351.74 metre @ ₹", "726.319 sqm @ ₹", "80.0 no @ ₹") so description numbers like "50 metre" are never matched!
+            const qtyM = block.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:cum|sqm|metre|meter|rmt|kg|no|nos|day|each|ls|mt|qtl)\s*@/i)
+              || block.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:cum|sqm|metre|meter|rmt|kg|no|nos|day|each|ls|mt|qtl)\b/i);
             const qtyVal = qtyM ? parseFloat(qtyM[1].replace(/,/g, '')) : 0;
             // Match final rupee amount in the item block (last ₹ number, not the unit rate after @)
             const rupeeMatches = Array.from(block.matchAll(/₹\s*(\d+(?:,\d+)*(?:\.\d+)?)/g));
@@ -1454,7 +1466,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V21__ = true;
+      window.__SECURE_AI_IPAD_V22__ = true;
     })();
     """#
 }
