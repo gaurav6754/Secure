@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V9__) return;
+      if (window.__SECURE_AI_IPAD_V10__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -441,8 +441,14 @@ enum SecureAutomationJS {
         const out = [];
         const seen = new Set();
         const addCand = (el) => {
-          const target = el.closest('button, a, [role="button"]') || el;
+          // NEVER walk up to a wide accordion header (<mat-expansion-panel-header role="button">)!
+          const smallParent = el.closest('button, a');
+          const target = (smallParent && smallParent.getBoundingClientRect().width <= 56 && smallParent.getBoundingClientRect().height <= 56)
+            ? smallParent
+            : el;
           if (!target || seen.has(target)) return;
+          const tr = target.getBoundingClientRect();
+          if (tr.width > 64 || tr.height > 64) return;
           seen.add(target);
           out.push(target);
         };
@@ -529,6 +535,39 @@ enum SecureAutomationJS {
         return { ok: true, message: `Added heading: ${headingText}` };
       }
 
+      function findSearchButtonNear(searchBox) {
+        if (!searchBox) return null;
+        const sb = searchBox.getBoundingClientRect();
+        // 1. Check sibling/input-group button immediately to the right of searchBox (cyan magnifier icon button)
+        const parent = searchBox.parentElement;
+        if (parent) {
+          const nearBtns = Array.from(parent.querySelectorAll('button, a, span, i, svg, [role="button"]'))
+            .filter((el) => {
+              if (el === searchBox || !isVisible(el)) return false;
+              const r = el.getBoundingClientRect();
+              return r.left >= sb.right - 12 && r.left <= sb.right + 110 && Math.abs((r.top + r.height / 2) - (sb.top + sb.height / 2)) <= 32;
+            })
+            .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+          if (nearBtns.length > 0) {
+            const b = nearBtns[0].closest('button, a');
+            return (b && b.getBoundingClientRect().width <= 120) ? b : nearBtns[0];
+          }
+        }
+        // 2. Global geometric scan right next to searchBox
+        const allBtns = queryAllAcrossDocs('button, a.btn, [role="button"], i.fa-search, .fa-magnifying-glass, .bi-search')
+          .filter((el) => {
+            if (!isVisible(el) || el.disabled) return false;
+            const r = el.getBoundingClientRect();
+            return r.left >= sb.right - 12 && r.left <= sb.right + 110 && Math.abs((r.top + r.height / 2) - (sb.top + sb.height / 2)) <= 34;
+          })
+          .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+        if (allBtns.length > 0) {
+          const b = allBtns[0].closest('button, a');
+          return (b && b.getBoundingClientRect().width <= 120) ? b : allBtns[0];
+        }
+        return findRightPanelButtonByText([/search/i, /find/i, /^go$/i]);
+      }
+
       async function addItem(headingIndex, headingText, code, isTM) {
         await dismissSwalIfAny();
         const row = findHeadingRowByTextOrIndex(headingText, headingIndex);
@@ -551,18 +590,32 @@ enum SecureAutomationJS {
             .filter((s) => isVisible(s) && !s.disabled && s.getBoundingClientRect().left > vw * 0.38);
           return selects.find((s) => {
             const txt = Array.from(s.options).map((o) => o.text).join(' ').toLowerCase();
-            return txt.includes('sub head') || txt.includes('subhead') || txt.includes('mgnrega') || txt.includes('54 -') || txt.includes('earth');
+            return txt.includes('sub head') || txt.includes('subhead') || txt.includes('mgnrega') || txt.includes('54 -') || txt.includes('54-') || txt.includes('earth');
           }) || selects[0] || null;
         };
 
         const plusCands = findAddItemCandidatesInRow(row);
+        // Also add direct elementFromPoint probe on the exact ⊕ coordinates in the heading header bar (around 72-76% of row width)
+        const rr = row.getBoundingClientRect();
+        for (const frac of [0.74, 0.71, 0.77, 0.68]) {
+          const px = rr.left + rr.width * frac;
+          const py = rr.top + Math.min(rr.height * 0.5, 28);
+          try {
+            const hit = (row.ownerDocument || document).elementFromPoint(px, py);
+            if (hit && !plusCands.includes(hit)) {
+              const hr = hit.getBoundingClientRect();
+              if (hr.width <= 56 && hr.height <= 56) plusCands.push(hit);
+            }
+          } catch (_) {}
+        }
+
         if (plusCands.length === 0) {
           return { ok: false, message: `Could not find ⊕ Add Item button on heading "${headingText}".` };
         }
 
         let searchBox = null;
         let subheadSelect = null;
-        for (const cand of plusCands.slice(0, 3)) {
+        for (const cand of plusCands.slice(0, 4)) {
           await clickEl(cand);
           await waitForPortalIdle(700, 12000);
           for (let w = 0; w < 6; w++) {
@@ -574,21 +627,32 @@ enum SecureAutomationJS {
           if (searchBox || subheadSelect) break;
         }
 
+        // Select the right Sub Head Type (54 - MGNREGA Bihar Data-TM vs 54 - MGNREGA Bihar Data)
         if (subheadSelect) {
+          try { subheadSelect.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
           const chapter = String(code).split('.')[0].trim();
+          const opts = Array.from(subheadSelect.options);
           let chosen = null;
-          for (const opt of Array.from(subheadSelect.options)) {
-            const t = (opt.text || '').trim();
-            if (isTM && t.toUpperCase().includes('54') && t.toUpperCase().includes('TM')) { chosen = opt; break; }
-            if (!isTM && chapter === '54' && t.toUpperCase().includes('54') && !t.toUpperCase().includes('TM') && t.toLowerCase().includes('bihar')) { chosen = opt; break; }
-            if (chapter !== '54' && t.startsWith(chapter)) { chosen = opt; break; }
+          if (isTM) {
+            chosen = opts.find((o) => {
+              const t = (o.text || '').toUpperCase();
+              return t.includes('54') && (t.includes('TM') || t.includes('DATA-TM'));
+            });
+          } else if (chapter === '54') {
+            chosen = opts.find((o) => {
+              const t = (o.text || '').toUpperCase();
+              return t.includes('54') && !t.includes('TM') && (t.includes('BIHAR') || t.includes('MGNREGA') || t.startsWith('54'));
+            });
+          } else {
+            chosen = opts.find((o) => (o.text || '').trim().startsWith(chapter + ' ') || (o.text || '').trim().startsWith(chapter + '-'));
           }
-          if (chosen && subheadSelect.value !== chosen.value) {
+          if (chosen) {
             await moveCursorAndRipple(subheadSelect);
+            subheadSelect.selectedIndex = chosen.index;
             subheadSelect.value = chosen.value;
             subheadSelect.dispatchEvent(new Event('input', { bubbles: true }));
             subheadSelect.dispatchEvent(new Event('change', { bubbles: true }));
-            await waitForPortalIdle(850, 15000);
+            await waitForPortalIdle(900, 15000);
           }
         }
 
@@ -596,12 +660,14 @@ enum SecureAutomationJS {
         if (!searchBox) {
           return { ok: false, message: `Specification/Activity search box not found for ${code}.` };
         }
+        try { searchBox.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
         await moveCursorAndRipple(searchBox);
         setNativeValue(searchBox, code);
         try { searchBox.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true })); } catch (_) {}
         await sleep(250);
 
-        const searchBtn = findRightPanelButtonByText([/search/i, /find/i, /^go$/i]);
+        // Click the cyan magnifier search button right next to the search box
+        const searchBtn = findSearchButtonNear(searchBox);
         if (searchBtn) {
           await clickEl(searchBtn);
           await waitForPortalIdle(850, 15000);
@@ -609,7 +675,7 @@ enum SecureAutomationJS {
 
         const codeUpper = String(code).trim().toUpperCase();
         let matchedRow = null;
-        for (let w = 0; w < 10; w++) {
+        for (let w = 0; w < 12; w++) {
           const rows = queryAllAcrossDocs('tr, .list-group-item, .search-result-row, div')
             .filter((r) => isVisible(r) && r.getBoundingClientRect().left > vw * 0.35 && r.getBoundingClientRect().height < 240 && r.querySelector('input[type="checkbox"]'));
           matchedRow = rows.find((r) => (r.innerText || '').toUpperCase().includes(codeUpper));
@@ -627,12 +693,12 @@ enum SecureAutomationJS {
         const chk = matchedRow.querySelector('input[type="checkbox"]');
         if (chk && !chk.checked) {
           await clickEl(getCheckboxTarget(chk) || chk);
-          await sleep(220);
+          await sleep(250);
         }
 
-        const saveSpecBtn = findRightPanelButtonByText([/save/i, /add\s*selected/i, /add\s*item/i, /^add$/i, /submit/i]);
+        const saveSpecBtn = findRightPanelButtonByText([/^save$/i, /save/i, /add\s*selected/i, /add\s*item/i, /^add$/i, /submit/i]);
         if (!saveSpecBtn) {
-          return { ok: false, message: `Save/Add button not found after selecting ${code}.` };
+          return { ok: false, message: `Save button not found after selecting ${code}.` };
         }
         await clickEl(saveSpecBtn);
         await waitForPortalIdle(1000, 20000);
@@ -643,43 +709,106 @@ enum SecureAutomationJS {
 
       async function fillMeasurements(headingIndex, headingText, code, rowsData) {
         await dismissSwalIfAny();
+        const vw = window.innerWidth || 1024;
         const row = findHeadingRowByTextOrIndex(headingText, headingIndex);
         if (!row) {
           return { ok: false, message: `Heading "${headingText}" not found for measurements of ${code}.` };
         }
 
-        const container = row.parentElement || row;
-        const codeUpper = String(code).toUpperCase();
-        let itemNode = Array.from(container.querySelectorAll('div, tr, li, a, span')).find((n) => isVisible(n) && (n.innerText || '').toUpperCase().includes(codeUpper) && n.getBoundingClientRect().height < 140);
+        // Locate the item row under this heading (expand heading if collapsed)
+        const findItemRow = () => {
+          const container = row.parentElement?.parentElement || row.parentElement || document;
+          const codeUpper = String(code).toUpperCase();
+          const nodes = Array.from(container.querySelectorAll('div, tr, li'))
+            .filter((n) => {
+              if (!isVisible(n)) return false;
+              const r = n.getBoundingClientRect();
+              if (r.left > vw * 0.44 || r.height > 120 || r.height < 18) return false;
+              const t = (n.innerText || '').toUpperCase();
+              return t.includes(codeUpper) && !t.includes('ANALYSIS OF RATES');
+            })
+            .sort((a, b) => (a.getBoundingClientRect().width * a.getBoundingClientRect().height) - (b.getBoundingClientRect().width * b.getBoundingClientRect().height));
+          if (nodes.length > 0) {
+            // Walk up to the full item row containing its blue (+) and red trash icons
+            let itemEl = nodes[0];
+            for (let s = 0; s < 5 && itemEl.parentElement; s++) {
+              const ir = itemEl.getBoundingClientRect();
+              const pr = itemEl.parentElement.getBoundingClientRect();
+              if (ir.width >= vw * 0.28 && ir.height <= 110) break;
+              if (pr.width <= vw * 0.45 && pr.height <= 115) itemEl = itemEl.parentElement;
+              else break;
+            }
+            return itemEl;
+          }
+          return null;
+        };
+
+        let itemNode = findItemRow();
         if (!itemNode) {
           await clickEl(row);
           await sleep(500);
-          itemNode = Array.from(container.querySelectorAll('div, tr, li, a, span')).find((n) => isVisible(n) && (n.innerText || '').toUpperCase().includes(codeUpper) && n.getBoundingClientRect().height < 140);
-        }
-        if (!itemNode) {
-          itemNode = Array.from(container.querySelectorAll('div, tr, li')).find((n) => isVisible(n) && ((n.innerText || '').includes('₹ 0') || (n.innerText || '').includes('0.00')) && n.getBoundingClientRect().height < 140);
+          itemNode = findItemRow();
         }
         if (itemNode) {
-          const measBtn = itemNode.querySelector('button[title*="Meas"], a[title*="Meas"], .fa-plus, .fa-calculator, .fa-edit') || itemNode;
+          // Click the filled blue (+) button on the right half of the item row (before the red trash icon)
+          const ir = itemNode.getBoundingClientRect();
+          const itemIcons = Array.from(itemNode.querySelectorAll('button, a, svg, i, img, mat-icon, fa-icon, span'))
+            .filter((el) => {
+              if (!isVisible(el)) return false;
+              const r = el.getBoundingClientRect();
+              if (r.width < 10 || r.width > 44 || r.height < 10 || r.height > 44) return false;
+              if (r.left < ir.left + ir.width * 0.55) return false;
+              const cls = typeof el.className === 'string' ? el.className : (el.className?.baseVal || '');
+              const meta = `${cls} ${el.getAttribute('title') || ''}`.toLowerCase();
+              if (meta.includes('trash') || meta.includes('delete')) return false;
+              return true;
+            })
+            .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+          let measBtn = itemIcons[0] || itemNode;
+          const smallBtn = measBtn.closest?.('button, a');
+          if (smallBtn && smallBtn.getBoundingClientRect().width <= 56) measBtn = smallBtn;
           await clickEl(measBtn);
           await waitForPortalIdle(800, 15000);
         }
 
+        const getMeasRows = () => queryAllAcrossDocs('table tbody tr').filter((tr) => {
+          return isVisible(tr) && tr.getBoundingClientRect().left > vw * 0.35 && tr.querySelectorAll('input:not([type="hidden"]):not([type="checkbox"])').length >= 3;
+        });
+
         for (let rIdx = 0; rIdx < rowsData.length; rIdx++) {
           const rData = rowsData[rIdx];
-          if (rIdx > 0 || rData.isDeduction) {
-            const addRowBtn = rData.isDeduction
-              ? findButtonByText([/add\s*deduct/i, /deduction/i])
-              : findButtonByText([/add\s*measurement/i, /add\s*row/i, /\+\s*add/i]);
-            if (addRowBtn) {
-              await clickEl(addRowBtn);
-              await sleep(300);
+          let trs = getMeasRows();
+
+          // On Row 0: if no measurement input row is visible yet, click 'Add Measurements +' (or 'Add Deduction +')!
+          if (rIdx === 0 && trs.length === 0) {
+            const openBtn = rData.isDeduction
+              ? findRightPanelButtonByText([/add\s*deduct/i, /deduction/i])
+              : findRightPanelButtonByText([/add\s*measurement/i, /add\s*row/i, /\+\s*add/i]);
+            if (openBtn) {
+              await clickEl(openBtn);
+              await waitForPortalIdle(600, 10000);
+              trs = getMeasRows();
             }
+          } else if (rIdx > 0) {
+            // Try the small cyan '+' button in the last row first, or 'Add Deduction +' / 'Add Measurements +'
+            let added = false;
+            if (rData.isDeduction) {
+              const dedBtn = findRightPanelButtonByText([/add\s*deduct/i, /deduction/i]);
+              if (dedBtn) { await clickEl(dedBtn); await sleep(350); added = true; }
+            }
+            if (!added && trs.length > 0) {
+              const lastTr = trs[trs.length - 1];
+              const rowPlus = lastTr.querySelector('.fa-plus, .bi-plus, button.btn-info, button.btn-primary, button[title*="Add" i]')
+                || Array.from(lastTr.querySelectorAll('button, a')).find((b) => isVisible(b) && (b.innerText || '').trim() === '+');
+              if (rowPlus) { await clickEl(rowPlus); await sleep(300); added = true; }
+            }
+            if (!added) {
+              const addRowBtn = findRightPanelButtonByText([/add\s*measurement/i, /add\s*row/i, /\+\s*add/i]);
+              if (addRowBtn) { await clickEl(addRowBtn); await sleep(350); }
+            }
+            trs = getMeasRows();
           }
 
-          const trs = queryAllAcrossDocs('table tbody tr').filter((tr) => {
-            return isVisible(tr) && tr.querySelectorAll('input:not([type="hidden"]):not([type="checkbox"])').length >= 3;
-          });
           const targetTr = trs[trs.length - 1];
           if (!targetTr) {
             return { ok: false, message: `Measurement input row not found for ${code} (row ${rIdx + 1}).` };
@@ -849,7 +978,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V9__ = true;
+      window.__SECURE_AI_IPAD_V10__ = true;
     })();
     """#
 }
