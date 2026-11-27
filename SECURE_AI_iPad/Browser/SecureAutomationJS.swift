@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V8__) return;
+      if (window.__SECURE_AI_IPAD_V9__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -207,6 +207,18 @@ enum SecureAutomationJS {
         return null;
       }
 
+      function findRightPanelButtonByText(patterns) {
+        const vw = window.innerWidth || 1024;
+        const regexList = patterns.map((p) => (p instanceof RegExp ? p : new RegExp(p, 'i')));
+        const candidates = queryAllAcrossDocs('button, a.btn, input[type="button"], input[type="submit"], [role="button"], a')
+          .filter((el) => isVisible(el) && !el.disabled && el.getBoundingClientRect().left > vw * 0.35);
+        for (const el of candidates) {
+          const txt = (el.innerText || el.value || el.getAttribute('title') || el.getAttribute('aria-label') || '').trim();
+          if (regexList.some((re) => re.test(txt))) return el;
+        }
+        return findButtonByText(patterns);
+      }
+
       async function dismissSwalIfAny() {
         for (const btn of queryAllAcrossDocs('.swal2-confirm, button.confirm')) {
           if (isVisible(btn)) {
@@ -370,7 +382,7 @@ enum SecureAutomationJS {
       }
 
       function findHeadingRowByTextOrIndex(headingText, headingIndex) {
-        const vw = window.innerWidth;
+        const vw = window.innerWidth || 1024;
         const targetText = String(headingText || '').trim().toUpperCase();
 
         const allRows = [];
@@ -378,19 +390,20 @@ enum SecureAutomationJS {
         for (const el of queryAllAcrossDocs('div, li, tr, mat-expansion-panel-header, button, a, p, span, h5, h6')) {
           if (!isVisible(el)) continue;
           const r = el.getBoundingClientRect();
-          if (r.left > vw * 0.45 || r.width < 40 || r.height > 120) continue;
+          if (r.left > vw * 0.44 || r.width < 40 || r.height > 120) continue;
           const txt = (el.innerText || '').trim().toUpperCase();
           if (!txt || txt.includes('NO APPENDIX ADDED') || txt.includes('ADD APPENDIX/DESCRIPTION') || txt.includes('VB-G RAM G TOTAL')) continue;
 
           if (txt.includes('ANALYSIS OF RATES') || (targetText.length >= 3 && txt.includes(targetText))) {
+            // Walk up to the FULL-WIDTH heading header bar (>= 30% of viewport width) so it includes [⊕, Edit, Trash] on the right!
             let row = el;
-            for (let step = 0; step < 5 && row.parentElement; step++) {
+            for (let step = 0; step < 7 && row.parentElement; step++) {
+              const curR = row.getBoundingClientRect();
               const pr = row.parentElement.getBoundingClientRect();
-              const iconCount = row.querySelectorAll('svg, i, img, button, a, mat-icon').length;
-              if (iconCount >= 2 && row.getBoundingClientRect().width >= 150 && row.getBoundingClientRect().height <= 110) {
+              if (curR.width >= vw * 0.30 && curR.height <= 115) {
                 break;
               }
-              if (pr.width <= vw * 0.48 && pr.height <= 120) {
+              if (pr.width <= vw * 0.46 && pr.height <= 125) {
                 row = row.parentElement;
               } else {
                 break;
@@ -404,7 +417,7 @@ enum SecureAutomationJS {
         }
 
         const filtered = allRows.filter((row) => {
-          return !allRows.some((other) => other !== row && row.contains(other) && other.querySelectorAll('svg, i, img, button, a, mat-icon').length >= 2);
+          return !allRows.some((other) => other !== row && row.contains(other) && other.getBoundingClientRect().width >= vw * 0.30);
         });
 
         filtered.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
@@ -416,32 +429,61 @@ enum SecureAutomationJS {
         return filtered[headingIndex] || filtered[filtered.length - 1] || null;
       }
 
-      function findAddItemButtonInRow(row) {
-        if (!row) return null;
+      function findAddItemCandidatesInRow(row) {
+        if (!row) return [];
         const rowRect = row.getBoundingClientRect();
-        const explicitPlus = row.querySelector('.fa-plus, .fa-plus-circle, .fa-circle-plus, .bi-plus, .bi-plus-circle, [title*="Add" i], [aria-label*="Add" i], [title*="Spec" i]');
-        if (explicitPlus && isVisible(explicitPlus)) {
-          return explicitPlus.closest('button, a, [role="button"]') || explicitPlus;
+        // The (i) info icon is on the left (~30-45% of row width).
+        // The action buttons [⊕ Add Item, ✎ Edit, 🗑 Delete] are ALWAYS on the RIGHT half (> 55% of row width).
+        // The collapse chevron (v) is at the far right edge (> rowRect.right - 26).
+        const minLeft = rowRect.left + rowRect.width * 0.55;
+        const maxRight = rowRect.right - 22;
+
+        const out = [];
+        const seen = new Set();
+        const addCand = (el) => {
+          const target = el.closest('button, a, [role="button"]') || el;
+          if (!target || seen.has(target)) return;
+          seen.add(target);
+          out.push(target);
+        };
+
+        // 1. Explicit plus/add icons strictly in the right half
+        for (const el of row.querySelectorAll('.fa-plus, .fa-plus-circle, .fa-circle-plus, .bi-plus, .bi-plus-circle, [title*="Add" i], [aria-label*="Add" i]')) {
+          if (!isVisible(el)) continue;
+          const r = el.getBoundingClientRect();
+          if (r.left >= minLeft && r.right <= rowRect.right - 10) {
+            addCand(el);
+          }
         }
-        const icons = Array.from(row.querySelectorAll('button, a, svg, i, img, mat-icon, span, [role="button"]'))
+
+        // 2. Geometric action-cluster scan: leftmost small icon in [55% .. right-22px] = ⊕ (before Edit pencil & Delete trash)
+        const icons = Array.from(row.querySelectorAll('button, a, svg, i, img, mat-icon, fa-icon, span, [role="button"]'))
           .filter((el) => {
             if (!isVisible(el)) return false;
             const r = el.getBoundingClientRect();
-            const isSmallIcon = r.width >= 10 && r.width <= 48 && r.height >= 10 && r.height <= 48;
-            if (!isSmallIcon) return false;
+            if (r.width < 10 || r.width > 46 || r.height < 10 || r.height > 46) return false;
+            if (r.left < minLeft || r.right > maxRight) return false;
             const win = el.ownerDocument?.defaultView || window;
-            const clickable = ['BUTTON', 'A', 'SVG', 'I', 'IMG', 'MAT-ICON'].includes(el.tagName) || win.getComputedStyle(el).cursor === 'pointer';
+            const clickable = ['BUTTON', 'A', 'SVG', 'I', 'IMG', 'MAT-ICON', 'FA-ICON'].includes(el.tagName)
+              || el.getAttribute('role') === 'button'
+              || win.getComputedStyle(el).cursor === 'pointer';
             if (!clickable) return false;
-            const meta = `${typeof el.className === 'string' ? el.className : ''} ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
-            if (meta.includes('info') || meta.includes('exclamation') || meta.includes('trash') || meta.includes('delete') || meta.includes('edit') || meta.includes('pencil') || meta.includes('chevron') || meta.includes('angle') || meta.includes('caret')) return false;
-            return r.left > (rowRect.left + rowRect.width * 0.43) && r.left < (rowRect.left + rowRect.width * 0.82);
+            const cls = typeof el.className === 'string' ? el.className : (el.className?.baseVal || '');
+            const meta = `${cls} ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
+            if (meta.includes('info') || meta.includes('exclamation') || meta.includes('trash') || meta.includes('delete') || meta.includes('edit') || meta.includes('pencil') || meta.includes('chevron') || meta.includes('angle') || meta.includes('caret') || meta.includes('down') || meta.includes('up')) {
+              return false;
+            }
+            return true;
           })
           .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
 
-        if (icons.length > 0) {
-          return icons[0].closest('button, a, [role="button"]') || icons[0];
-        }
-        return null;
+        for (const ic of icons) addCand(ic);
+        return out;
+      }
+
+      function findAddItemButtonInRow(row) {
+        const cands = findAddItemCandidatesInRow(row);
+        return cands.length > 0 ? cands[0] : null;
       }
 
       async function addHeading(headingText) {
@@ -494,18 +536,43 @@ enum SecureAutomationJS {
           return { ok: false, message: `Heading "${headingText}" (#${headingIndex + 1}) not found in left panel.` };
         }
 
-        const plusBtn = findAddItemButtonInRow(row);
-        if (!plusBtn) {
+        const vw = window.innerWidth || 1024;
+        const findRightSearchBox = () => {
+          const searchInputs = queryAllAcrossDocs('input[type="text"], input[type="search"], input:not([type])')
+            .filter((el) => isVisible(el) && !el.disabled && !el.readOnly && el.getBoundingClientRect().left > vw * 0.38);
+          return searchInputs.find((el) => {
+            const meta = `${el.placeholder || ''} ${el.name || ''} ${el.id || ''}`.toLowerCase();
+            return meta.includes('spec') || meta.includes('search') || meta.includes('code') || meta.includes('activity') || meta.includes('item');
+          }) || searchInputs[0] || null;
+        };
+
+        const findRightSubheadSelect = () => {
+          const selects = queryAllAcrossDocs('select')
+            .filter((s) => isVisible(s) && !s.disabled && s.getBoundingClientRect().left > vw * 0.38);
+          return selects.find((s) => {
+            const txt = Array.from(s.options).map((o) => o.text).join(' ').toLowerCase();
+            return txt.includes('sub head') || txt.includes('subhead') || txt.includes('mgnrega') || txt.includes('54 -') || txt.includes('earth');
+          }) || selects[0] || null;
+        };
+
+        const plusCands = findAddItemCandidatesInRow(row);
+        if (plusCands.length === 0) {
           return { ok: false, message: `Could not find ⊕ Add Item button on heading "${headingText}".` };
         }
-        await clickEl(plusBtn);
-        await waitForPortalIdle(850, 15000);
 
-        const selects = queryAllAcrossDocs('select').filter((s) => isVisible(s) && !s.disabled);
-        const subheadSelect = selects.find((s) => {
-          const txt = Array.from(s.options).map((o) => o.text).join(' ').toLowerCase();
-          return txt.includes('sub head') || txt.includes('mgnrega') || txt.includes('54 -');
-        });
+        let searchBox = null;
+        let subheadSelect = null;
+        for (const cand of plusCands.slice(0, 3)) {
+          await clickEl(cand);
+          await waitForPortalIdle(700, 12000);
+          for (let w = 0; w < 6; w++) {
+            subheadSelect = findRightSubheadSelect();
+            searchBox = findRightSearchBox();
+            if (searchBox || subheadSelect) break;
+            await sleep(200);
+          }
+          if (searchBox || subheadSelect) break;
+        }
 
         if (subheadSelect) {
           const chapter = String(code).split('.')[0].trim();
@@ -516,40 +583,42 @@ enum SecureAutomationJS {
             if (!isTM && chapter === '54' && t.toUpperCase().includes('54') && !t.toUpperCase().includes('TM') && t.toLowerCase().includes('bihar')) { chosen = opt; break; }
             if (chapter !== '54' && t.startsWith(chapter)) { chosen = opt; break; }
           }
-          if (chosen) {
+          if (chosen && subheadSelect.value !== chosen.value) {
             await moveCursorAndRipple(subheadSelect);
             subheadSelect.value = chosen.value;
+            subheadSelect.dispatchEvent(new Event('input', { bubbles: true }));
             subheadSelect.dispatchEvent(new Event('change', { bubbles: true }));
             await waitForPortalIdle(850, 15000);
           }
         }
 
-        const searchInputs = queryAllAcrossDocs('input[type="text"], input[type="search"], input:not([type])')
-          .filter((el) => isVisible(el) && !el.disabled && el.getBoundingClientRect().left > window.innerWidth * 0.35);
-        const searchBox = searchInputs.find((el) => {
-          const meta = `${el.placeholder || ''} ${el.name || ''} ${el.id || ''}`.toLowerCase();
-          return meta.includes('spec') || meta.includes('search') || meta.includes('code') || meta.includes('activity') || meta.includes('item');
-        }) || searchInputs[0];
-
+        if (!searchBox) searchBox = findRightSearchBox();
         if (!searchBox) {
           return { ok: false, message: `Specification/Activity search box not found for ${code}.` };
         }
         await moveCursorAndRipple(searchBox);
         setNativeValue(searchBox, code);
-        await sleep(220);
+        try { searchBox.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true })); } catch (_) {}
+        await sleep(250);
 
-        const searchBtn = findButtonByText([/search/i, /find/i, /go/i]);
+        const searchBtn = findRightPanelButtonByText([/search/i, /find/i, /^go$/i]);
         if (searchBtn) {
           await clickEl(searchBtn);
           await waitForPortalIdle(850, 15000);
         }
 
-        const rows = queryAllAcrossDocs('tr, .list-group-item, .search-result-row, div').filter((r) => isVisible(r) && r.querySelector('input[type="checkbox"]'));
         const codeUpper = String(code).trim().toUpperCase();
-        const matchedRow = rows.find((r) => (r.innerText || '').toUpperCase().includes(codeUpper) && r.getBoundingClientRect().height < 220);
+        let matchedRow = null;
+        for (let w = 0; w < 10; w++) {
+          const rows = queryAllAcrossDocs('tr, .list-group-item, .search-result-row, div')
+            .filter((r) => isVisible(r) && r.getBoundingClientRect().left > vw * 0.35 && r.getBoundingClientRect().height < 240 && r.querySelector('input[type="checkbox"]'));
+          matchedRow = rows.find((r) => (r.innerText || '').toUpperCase().includes(codeUpper));
+          if (matchedRow) break;
+          await sleep(250);
+        }
 
         if (!matchedRow) {
-          const cancelBtn = findButtonByText([/cancel/i, /close/i]);
+          const cancelBtn = findRightPanelButtonByText([/cancel/i, /close/i]);
           if (cancelBtn) await clickEl(cancelBtn);
           await sleep(300);
           return { ok: true, skipped: true, message: `Code ${code} not in search results (already present). Closed cleanly.` };
@@ -561,9 +630,9 @@ enum SecureAutomationJS {
           await sleep(220);
         }
 
-        const saveSpecBtn = findButtonByText([/save/i, /add\s*selected/i, /add\s*item/i, /submit/i]);
+        const saveSpecBtn = findRightPanelButtonByText([/save/i, /add\s*selected/i, /add\s*item/i, /^add$/i, /submit/i]);
         if (!saveSpecBtn) {
-          return { ok: false, message: `Save button not found after selecting ${code}.` };
+          return { ok: false, message: `Save/Add button not found after selecting ${code}.` };
         }
         await clickEl(saveSpecBtn);
         await waitForPortalIdle(1000, 20000);
@@ -627,7 +696,7 @@ enum SecureAutomationJS {
           }
         }
 
-        const saveBtn = findButtonByText([/save\s*measurement/i, /^save$/i, /update/i]);
+        const saveBtn = findRightPanelButtonByText([/save\s*measurement/i, /^save$/i, /update/i]);
         if (!saveBtn) {
           return { ok: false, message: `Save Measurements button not found for ${code}.` };
         }
@@ -780,7 +849,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V8__ = true;
+      window.__SECURE_AI_IPAD_V9__ = true;
     })();
     """#
 }
