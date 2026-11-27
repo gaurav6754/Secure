@@ -24,6 +24,7 @@ struct MainWorkspaceView: View {
     @EnvironmentObject var license: LicenseService
     @EnvironmentObject var theme: ThemeManager
     @EnvironmentObject var savedLogins: SavedLoginStore
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedTab: SidebarTab = .pdf
     @State private var showSidebar: Bool = true
@@ -90,6 +91,11 @@ struct MainWorkspaceView: View {
             AddLoginIDSheet()
                 .environmentObject(savedLogins)
                 .environmentObject(theme)
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase == .active {
+                browser.restoreViewportAfterForeground()
+            }
         }
         .task {
             await license.verifyOnLaunch()

@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V17__) return;
+      if (window.__SECURE_AI_IPAD_V18__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -143,14 +143,30 @@ enum SecureAutomationJS {
       }
 
       async function autoFillSecureLogin(userId, password) {
-        const inputs = queryAllAcrossDocs('input').filter((el) => isVisible(el) && !el.disabled);
-        const userInput = inputs.find((el) => {
-          const m = `${el.placeholder || ''} ${el.name || ''} ${el.id || ''} ${el.getAttribute('formcontrolname') || ''}`.toLowerCase();
-          return m.includes('user') || m.includes('login') || m.includes('email') || el.type === 'text';
-        });
-        const passInput = inputs.find((el) => el.type === 'password' || `${el.placeholder || ''} ${el.name || ''}`.toLowerCase().includes('pass'));
-        const captchaInput = inputs.find((el) => `${el.placeholder || ''} ${el.name || ''} ${el.id || ''}`.toLowerCase().includes('captcha'));
+        const findLoginFields = () => {
+          const inputs = queryAllAcrossDocs('input').filter((el) => isVisible(el) && !el.disabled);
+          const userInput = inputs.find((el) => {
+            const m = `${el.placeholder || ''} ${el.name || ''} ${el.id || ''} ${el.getAttribute('formcontrolname') || ''}`.toLowerCase();
+            return m.includes('user') || m.includes('login') || m.includes('email') || el.type === 'text';
+          });
+          const passInput = inputs.find((el) => el.type === 'password' || `${el.placeholder || ''} ${el.name || ''}`.toLowerCase().includes('pass'));
+          const captchaInput = inputs.find((el) => `${el.placeholder || ''} ${el.name || ''} ${el.id || ''}`.toLowerCase().includes('captcha'));
+          return { userInput, passInput, captchaInput };
+        };
 
+        let { userInput, passInput, captchaInput } = findLoginFields();
+        if (!userInput || !passInput) {
+          // Try opening the Login popup automatically if the user is on the SECURE landing page
+          const openLoginBtn = findButtonByText([/^login$/i, /sign\s*in/i]);
+          if (openLoginBtn) {
+            await clickEl(openLoginBtn);
+            for (let w = 0; w < 8; w++) {
+              await sleep(180);
+              ({ userInput, passInput, captchaInput } = findLoginFields());
+              if (userInput && passInput) break;
+            }
+          }
+        }
         if (!userInput || !passInput) {
           return { ok: false, message: 'Open the SECURE Login popup first, then tap your saved account.' };
         }
@@ -161,8 +177,23 @@ enum SecureAutomationJS {
         setNativeValue(passInput, password, false);
         await sleep(120);
         hideCursor();
-        if (captchaInput) captchaInput.focus();
-        return { ok: true, message: `Filled login for ${userId}. Enter CAPTCHA and tap LOGIN.` };
+        if (captchaInput) {
+          try {
+            captchaInput.setAttribute('inputmode', 'numeric');
+            captchaInput.setAttribute('enterkeyhint', 'go');
+            if (!captchaInput.__secureAiEnterBound) {
+              captchaInput.__secureAiEnterBound = true;
+              captchaInput.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter') {
+                  const submitBtn = findButtonByText([/^login$/i, /submit/i]);
+                  if (submitBtn) submitBtn.click();
+                }
+              });
+            }
+          } catch (_) {}
+          captchaInput.focus();
+        }
+        return { ok: true, message: `Filled login for ${userId}. Type CAPTCHA and press Go/Return.` };
       }
 
       function isPortalLoading() {
@@ -1288,7 +1319,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V17__ = true;
+      window.__SECURE_AI_IPAD_V18__ = true;
     })();
     """#
 }

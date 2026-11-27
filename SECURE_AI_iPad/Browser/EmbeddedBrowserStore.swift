@@ -75,6 +75,44 @@ final class EmbeddedBrowserStore: ObservableObject {
         wv.evaluateJavaScript(js, completionHandler: nil)
     }
 
+    /// Fixes the iPadOS background-resume squished viewport bug without reloading the page
+    /// (preserves logged-in SECURE session and any open draft estimate).
+    func restoreViewportAfterForeground() {
+        guard let wv = webView else { return }
+        let targetZoom = zoomLevel
+        let runPass = { [weak wv] in
+            guard let wv else { return }
+            wv.setNeedsLayout()
+            wv.layoutIfNeeded()
+            if abs(wv.scrollView.zoomScale - 1.0) > 0.01 {
+                wv.scrollView.setZoomScale(1.0, animated: false)
+            }
+            // Micro-nudge pageZoom to force WebKit to recompute the live viewport width after scene restoration
+            wv.pageZoom = targetZoom + 0.001
+            wv.pageZoom = targetZoom
+            let js = """
+            (function() {
+              var el = document.documentElement;
+              if (el) {
+                el.style.transform = '';
+                el.style.width = '';
+                el.style.height = '';
+                el.style.zoom = '';
+              }
+              window.dispatchEvent(new Event('resize'));
+            })();
+            """
+            wv.evaluateJavaScript(js, completionHandler: nil)
+        }
+        // Run twice (immediately after scene activation + after SwiftUI layout settles)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            runPass()
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            runPass()
+        }
+    }
+
     func autoFillLogin(userId: String, password: String) async -> String {
         do {
             let raw = try await callAutomationJS(

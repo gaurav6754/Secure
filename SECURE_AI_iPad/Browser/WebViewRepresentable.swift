@@ -28,13 +28,15 @@ struct WebViewRepresentable: UIViewRepresentable {
                 config.userContentController = userContent
 
         let webView = WKWebView(frame: .zero, configuration: config)
+        webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
         webView.customUserAgent = store.desktopMode ? EmbeddedBrowserStore.desktopUserAgent : nil
-        webView.pageZoom = 1.0
-        webView.isOpaque = false
-        webView.backgroundColor = UIColor.clear
+        webView.pageZoom = store.zoomLevel
+        webView.isOpaque = true
+        webView.backgroundColor = UIColor.systemBackground
 
         context.coordinator.bindObservers(to: webView)
         store.webView = webView
@@ -108,6 +110,11 @@ struct WebViewRepresentable: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
             completionHandler(true)
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            // Auto-recover cleanly if iPadOS reclaimed the WebContent process while backgrounded
+            webView.reload()
         }
     }
 }
