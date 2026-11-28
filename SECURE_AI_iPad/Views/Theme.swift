@@ -90,8 +90,8 @@ final class ThemeManager: ObservableObject {
         let wpRaw = UserDefaults.standard.string(forKey: "secure_ai_wallpaper") ?? WallpaperStyle.auroraOrbs.rawValue
         self.wallpaper = WallpaperStyle(rawValue: wpRaw) ?? .auroraOrbs
 
-        let kindRaw = UserDefaults.standard.string(forKey: "secure_ai_custom_wp_kind") ?? WallpaperKind.none.rawValue
-        self.customWallpaperKind = WallpaperKind(rawValue: kindRaw) ?? .none
+        let kindRaw = UserDefaults.standard.string(forKey: "secure_ai_custom_wp_kind") ?? WallpaperKind.off.rawValue
+        self.customWallpaperKind = WallpaperKind(rawValue: kindRaw) ?? .off
         self.customWallpaperURL = UserDefaults.standard.string(forKey: "secure_ai_custom_wp_url") ?? ""
         self.customWallpaperFallbackURL = UserDefaults.standard.string(forKey: "secure_ai_custom_wp_fallback_url") ?? ""
         self.customWallpaperTitle = UserDefaults.standard.string(forKey: "secure_ai_custom_wp_title") ?? ""
@@ -110,7 +110,7 @@ final class ThemeManager: ObservableObject {
     }
 
     func clearCustomWallpaper() {
-        self.customWallpaperKind = .none
+        self.customWallpaperKind = .off
         self.customWallpaperURL = ""
         self.customWallpaperFallbackURL = ""
         self.customWallpaperTitle = ""
@@ -122,7 +122,7 @@ struct FrostedWallpaperBackdrop: View {
     let palette: AppThemePalette
     let style: WallpaperStyle
     let frosted: Bool
-    var customKind: WallpaperKind = .none
+    var customKind: WallpaperKind = .off
     var customURL: String = ""
     var customFallbackURL: String = ""
     var dimming: Double = 0.36
@@ -140,7 +140,7 @@ struct FrostedWallpaperBackdrop: View {
                 )
                 .clipped()
                 Color.black.opacity(min(max(dimming, 0.05), 0.80))
-            } else if customKind == .static && !customURL.isEmpty {
+            } else if customKind == .photo && !customURL.isEmpty {
                 StaticWallpaperImageView(urlString: customURL, isThumbnail: false)
                     .clipped()
                 Color.black.opacity(min(max(dimming, 0.05), 0.80))
@@ -169,7 +169,7 @@ struct FrostedWallpaperBackdrop: View {
             if frosted {
                 Rectangle()
                     .fill(.ultraThinMaterial)
-                    .opacity(customKind == .none ? (palette.isLight ? 0.55 : 0.42) : (palette.isLight ? 0.38 : 0.28))
+                    .opacity(customKind == .off ? (palette.isLight ? 0.55 : 0.42) : (palette.isLight ? 0.38 : 0.28))
             }
         }
         .clipped()

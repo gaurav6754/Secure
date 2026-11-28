@@ -3,9 +3,9 @@ import AVFoundation
 import UIKit
 
 enum WallpaperKind: String, Codable, CaseIterable {
-    case `none`
-    case `static`
-    case live
+    case off = "none"
+    case photo = "static"
+    case live = "live"
 }
 
 struct WallpaperItem: Identifiable, Codable, Hashable {
@@ -19,7 +19,7 @@ struct WallpaperItem: Identifiable, Codable, Hashable {
     let meta: String?
 
     var thumbnailURL: URL? {
-        if kind == .static, url.contains("images.pexels.com") {
+        if kind == .photo, url.contains("images.pexels.com") {
             let sep = url.contains("?") ? "&" : "?"
             return URL(string: "\(url)\(sep)auto=compress&cs=tinysrgb&w=420")
         }
@@ -27,7 +27,7 @@ struct WallpaperItem: Identifiable, Codable, Hashable {
     }
 
     var displayURL: URL? {
-        if kind == .static, url.contains("images.pexels.com") {
+        if kind == .photo, url.contains("images.pexels.com") {
             let sep = url.contains("?") ? "&" : "?"
             return URL(string: "\(url)\(sep)auto=compress&cs=tinysrgb&w=1080")
         }
@@ -153,11 +153,9 @@ struct StaticWallpaperImageView: View {
 }
 
 // MARK: - 120Hz Hardware VideoToolbox Live MP4 Wallpaper Player (AVPlayerLayer + AVPlayerLooper)
+@MainActor
 final class LoopingPlayerContainerView: UIView {
-    override static var layerClass: AnyClass { AVPlayerLayer.self }
-
-    var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
-
+    private let playerLayer = AVPlayerLayer()
     private var queuePlayer: AVQueuePlayer?
     private var looper: AVPlayerLooper?
     private var currentURLString: String = ""
@@ -169,11 +167,21 @@ final class LoopingPlayerContainerView: UIView {
         super.init(frame: frame)
         backgroundColor = .clear
         isUserInteractionEnabled = false
+        clipsToBounds = true
         playerLayer.videoGravity = .resizeAspectFill
+        layer.addSublayer(playerLayer)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = bounds
+        CATransaction.commit()
     }
 
     func configure(urlString: String, fallbackUrlString: String, isActive: Bool) {
@@ -210,10 +218,12 @@ final class LoopingPlayerContainerView: UIView {
 
         // Automatic fallback to original 4K download.mp4 if /hd.mp4 is unavailable on CDN
         statusObserver = item.observe(\.status, options: [.new]) { [weak self] observed, _ in
-            guard let self else { return }
-            if observed.status == .failed && !self.triedFallback && !self.fallbackURLString.isEmpty && self.fallbackURLString != urlString {
-                self.triedFallback = true
-                DispatchQueue.main.async {
+            let failed = (observed.status == .failed)
+            guard failed else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if !self.triedFallback && !self.fallbackURLString.isEmpty && self.fallbackURLString != urlString {
+                    self.triedFallback = true
                     self.loadStream(urlString: self.fallbackURLString, isActive: isActive)
                 }
             }
@@ -246,10 +256,6 @@ final class LoopingPlayerContainerView: UIView {
         queuePlayer?.removeAllItems()
         queuePlayer = nil
         playerLayer.player = nil
-    }
-
-    deinit {
-        tearDown()
     }
 }
 
@@ -326,11 +332,11 @@ struct WallpaperGallerySheet: View {
             VStack(spacing: 12) {
                 // Active Wallpaper Status Bar
                 HStack(spacing: 10) {
-                    Image(systemName: theme.customWallpaperKind == .live ? "play.rectangle.fill" : (theme.customWallpaperKind == .static ? "photo.fill" : "sparkles"))
+                    Image(systemName: theme.customWallpaperKind == .live ? "play.rectangle.fill" : (theme.customWallpaperKind == .photo ? "photo.fill" : "sparkles"))
                         .font(.system(size: 16, weight: .bold))
                         .foregroundColor(pal.accent)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(theme.customWallpaperKind == .none ? "Using Built-in \(theme.wallpaper.rawValue)" : theme.customWallpaperTitle)
+                        Text(theme.customWallpaperKind == .off ? "Using Built-in \(theme.wallpaper.rawValue)" : theme.customWallpaperTitle)
                             .font(.system(size: 13, weight: .bold))
                             .foregroundColor(pal.fg)
                             .lineLimit(1)
@@ -339,7 +345,7 @@ struct WallpaperGallerySheet: View {
                             .foregroundColor(pal.muted)
                     }
                     Spacer()
-                    if theme.customWallpaperKind != .none {
+                    if theme.customWallpaperKind != .off {
                         Button("Reset") {
                             theme.clearCustomWallpaper()
                         }
@@ -495,7 +501,7 @@ struct WallpaperGallerySheet: View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 10)], spacing: 10) {
                 ForEach(catalog.staticPhotos) { item in
-                    let isSelected = (theme.customWallpaperURL == item.url && theme.customWallpaperKind == .static)
+                    let isSelected = (theme.customWallpaperURL == item.url && theme.customWallpaperKind == .photo)
                     Button {
                         theme.applyCustomWallpaper(item)
                     } label: {
@@ -551,7 +557,7 @@ struct WallpaperGallerySheet: View {
 
                 Picker("Type", selection: $customKind) {
                     Text("Live MP4 Video").tag(WallpaperKind.live)
-                    Text("Static Photo").tag(WallpaperKind.static)
+                    Text("Static Photo").tag(WallpaperKind.photo)
                 }
                 .pickerStyle(.segmented)
 

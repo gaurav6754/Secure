@@ -107,7 +107,7 @@ struct SettingsLicenseView: View {
                     }
                     .pickerStyle(.segmented)
                     .onChange(of: theme.wallpaper) { _ in
-                        if theme.customWallpaperKind != .none {
+                        if theme.customWallpaperKind != .off {
                             theme.clearCustomWallpaper()
                         }
                     }
@@ -122,7 +122,7 @@ struct SettingsLicenseView: View {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text("HD & Live MP4 Wallpapers")
                                     .font(.system(size: 12, weight: .bold))
-                                Text(theme.customWallpaperKind == .none ? "Browse 129 Live MP4 + 250+ HD Photos (120Hz)" : "Active: \(theme.customWallpaperTitle)")
+                                Text(theme.customWallpaperKind == .off ? "Browse 129 Live MP4 + 250+ HD Photos (120Hz)" : "Active: \(theme.customWallpaperTitle)")
                                     .font(.system(size: 10))
                                     .opacity(0.88)
                                     .lineLimit(1)
@@ -144,7 +144,7 @@ struct SettingsLicenseView: View {
                         .cornerRadius(9)
                     }
 
-                    if theme.customWallpaperKind != .none {
+                    if theme.customWallpaperKind != .off {
                         HStack(spacing: 8) {
                             Text("Dim")
                                 .font(.system(size: 10.5, weight: .semibold))
