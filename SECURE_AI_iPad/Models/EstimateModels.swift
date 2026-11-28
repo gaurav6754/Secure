@@ -221,6 +221,7 @@ enum AutomationUnitKind: String, Codable {
     case addLumpSum
     case deleteItem
     case deleteHeading
+    case deleteLumpSum
 }
 
 struct AutomationUnit: Identifiable {

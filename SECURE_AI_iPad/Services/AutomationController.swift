@@ -137,6 +137,18 @@ final class AutomationController: ObservableObject {
                     if ok {
                         appendLog("✓ \(message)")
                         stepSucceeded = true
+                        // If an item was already present on portal during Add Item, skip its immediately following Fill Measurements step to prevent duplicating rows
+                        if unit.kind == .addItem && message.lowercased().contains("already present") {
+                            let nextIdx = unitIdx + 1
+                            if nextIdx < queue.count,
+                               queue[nextIdx].kind == .fillMeasurements,
+                               queue[nextIdx].headingIndex == unit.headingIndex,
+                               queue[nextIdx].item?.code.uppercased() == unit.item?.code.uppercased() {
+                                appendLog("⏭ Skipped duplicate measurement fill for already-present \(unit.item?.code ?? "")")
+                                completedSteps += 1
+                                unitIdx += 1
+                            }
+                        }
                     } else {
                         lastErrorBanner = message
                         isPaused = true
@@ -276,9 +288,57 @@ final class AutomationController: ObservableObject {
                 }
             }
 
+            // Compare Lump Sums (Missing, Amount Mismatch, and Extra portal Lump Sums)
+            var remainingPortalLS = scraped.lumpSums.enumerated().map { ($0.offset, $0.element) }
+            for (li, expectedLS) in target.lumpSums.enumerated() {
+                let (expectedKey, _) = mapLumpSumKeyword(expectedLS)
+                let expectedAmt = expectedLS.numericAmount
+                if let matchIdx = remainingPortalLS.firstIndex(where: { (_, pLS) in
+                    let (pKey, _) = mapLumpSumKeyword(LumpSumItem(type: "Material", description: pLS.description, amount: String(pLS.amount)))
+                    return pKey.lowercased() == expectedKey.lowercased()
+                }) {
+                    let (_, pLS) = remainingPortalLS.remove(at: matchIdx)
+                    if expectedAmt > 0 && abs(pLS.amount - expectedAmt) > 2.0 {
+                        let delLS = LumpSumItem(type: expectedLS.type, description: pLS.description, amount: String(pLS.amount))
+                        found.append(VerifyMismatch(
+                            category: "Lump Sum Mismatch",
+                            summary: String(format: "Lump Sum '%@' is ₹%.0f on portal (PDF expects ₹%.0f) — will Delete & Re-Add.", expectedKey, pLS.amount, expectedAmt),
+                            headingIndex: -1,
+                            itemIndex: nil,
+                            repairUnits: [
+                                AutomationUnit(id: "FIX_DEL_LS_\(li)", kind: .deleteLumpSum, label: "Delete Wrong Lump Sum \(expectedKey)", headingIndex: -1, itemIndex: nil, headingText: nil, item: nil, lumpSum: delLS),
+                                AutomationUnit(id: "FIX_ADD_LS_\(li)", kind: .addLumpSum, label: "Re-Add Lump Sum \(expectedKey)", headingIndex: -1, itemIndex: nil, headingText: nil, item: nil, lumpSum: expectedLS)
+                            ]
+                        ))
+                    }
+                } else if expectedAmt > 0 {
+                    found.append(VerifyMismatch(
+                        category: "Missing Lump Sum",
+                        summary: String(format: "Lump Sum '%@' (₹%.0f) is missing on portal.", expectedKey, expectedAmt),
+                        headingIndex: -1,
+                        itemIndex: nil,
+                        repairUnits: [
+                            AutomationUnit(id: "FIX_MISS_LS_\(li)", kind: .addLumpSum, label: "Add Missing Lump Sum \(expectedKey)", headingIndex: -1, itemIndex: nil, headingText: nil, item: nil, lumpSum: expectedLS)
+                        ]
+                    ))
+                }
+            }
+            for (pi, pLS) in remainingPortalLS where pLS.amount > 0 {
+                let delLS = LumpSumItem(type: "Material", description: pLS.description, amount: String(pLS.amount))
+                found.append(VerifyMismatch(
+                    category: "Extra Lump Sum",
+                    summary: String(format: "Extra Lump Sum '%@' (₹%.0f) on portal (will delete).", pLS.description, pLS.amount),
+                    headingIndex: -1,
+                    itemIndex: nil,
+                    repairUnits: [
+                        AutomationUnit(id: "FIX_EXTRA_LS_\(pi)", kind: .deleteLumpSum, label: "Delete Extra Lump Sum \(pLS.description)", headingIndex: -1, itemIndex: nil, headingText: nil, item: nil, lumpSum: delLS)
+                    ]
+                ))
+            }
+
             mismatches = found
             if found.isEmpty {
-                appendLog("✅ Verify complete: All headings & SOR codes match the opened SECURE draft!")
+                appendLog("✅ Verify complete: All headings, SOR quantities & Lump Sums match the opened SECURE draft!")
             } else {
                 appendLog("⚠ Found \(found.count) mismatch(es). Tap 'Auto-Fix (Delete & Re-Add)' to repair.")
             }
@@ -344,6 +404,14 @@ final class AutomationController: ObservableObject {
 
         case .deleteHeading:
             return (true, "Delete heading handled")
+
+        case .deleteLumpSum:
+            guard let ls = unit.lumpSum else { return (true, "Skipped empty lump sum delete") }
+            let res = try await browser.callAutomationJS(
+                "return await window.__SECURE_AI_IPAD__.deleteLumpSum(desc, amt);",
+                arguments: ["desc": ls.description, "amt": ls.numericAmount]
+            )
+            return extractJSResult(res)
         }
     }
 

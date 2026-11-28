@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V26__) return;
+      if (window.__SECURE_AI_IPAD_V27__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -1120,6 +1120,15 @@ enum SecureAutomationJS {
           // Open the Measurement or Deduction form via 'Add Measurements +' or 'Add Deduction +'
           let trs = getMeasRows();
           if (trs.length === 0) {
+            // If an empty/stale Save Measurements form is already open with 0 input rows, click Cancel first so Add Measurements + reappears!
+            const staleSave = findRightPanelButtonByText([/save\s*measurement/i]);
+            if (staleSave) {
+              const staleCancel = findRightPanelButtonByText([/^cancel$/i]);
+              if (staleCancel) {
+                await clickEl(staleCancel);
+                await sleep(380);
+              }
+            }
             const openPatterns = isDeductionBatch
               ? [/add\s*deduction/i, /deduction/i]
               : [/add\s*measurement/i, /measurement/i];
@@ -1332,6 +1341,52 @@ enum SecureAutomationJS {
         return { ok: true, message: `Added Lump Sum: ${keyword} (₹${amount})` };
       }
 
+      function findLeftPanelLumpSumCards() {
+        const vw = window.innerWidth || 1024;
+        const rawCards = [];
+        const seen = new Set();
+        const sorCodeRe = /\b\d{1,2}(?:\.TM)?(?:\.[A-Za-z0-9]+){2,6}\b/i;
+
+        for (const el of queryAllAcrossDocs('div, li, tr, mat-card, .card')) {
+          if (!isVisible(el)) continue;
+          const r = el.getBoundingClientRect();
+          if (r.left > vw * 0.46 || r.width < 110 || r.width > vw * 0.48 || r.height < 28 || r.height > 150) continue;
+          const txt = (el.innerText || '').trim();
+          if (!txt || txt.length > 220) continue;
+          if (!txt.includes('₹')) continue;
+          if (/analysis\s+of\s+rates/i.test(txt)) continue;
+          if (/vb-g\s*ram\s*g\s*total|overall\s*total|grand\s*total|no\s+appendix\s+added|add\s+appendix/i.test(txt)) continue;
+          if (sorCodeRe.test(txt)) continue;
+          // Must have a small action icon (edit/trash) on the right side of the card
+          const hasActionIcon = Array.from(el.querySelectorAll('button, a, svg, i, mat-icon, fa-icon, span')).some((ic) => {
+            if (!isVisible(ic)) return false;
+            const ir = ic.getBoundingClientRect();
+            return ir.width >= 10 && ir.width <= 44 && ir.height >= 10 && ir.height <= 44 && ir.left > r.left + r.width * 0.55;
+          });
+          if (!hasActionIcon) continue;
+          if (!seen.has(el)) {
+            seen.add(el);
+            rawCards.push(el);
+          }
+        }
+
+        // Keep innermost non-overlapping cards (so a container wrapping 2 lump sums is dropped)
+        const cards = rawCards
+          .filter((c) => !rawCards.some((other) => other !== c && c.contains(other)))
+          .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+
+        return cards.map((card) => {
+          const txt = (card.innerText || '').trim();
+          const rupeeMatches = Array.from(txt.matchAll(/₹\s*(\d+(?:,\d+)*(?:\.\d+)?)/g));
+          const amt = rupeeMatches.length > 0 ? parseFloat(rupeeMatches[rupeeMatches.length - 1][1].replace(/,/g, '')) : 0;
+          const desc = txt
+            .replace(/₹\s*\d+(?:,\d+)*(?:\.\d+)?/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          return { el: card, description: desc, amount: Number.isFinite(amt) ? amt : 0 };
+        }).filter((c) => c.description.length > 0 && c.amount > 0);
+      }
+
       async function scrapeCurrentEstimate() {
         const vw = window.innerWidth || 1024;
         const allRows = [];
@@ -1365,29 +1420,76 @@ enum SecureAutomationJS {
         const codeRe = /\b(\d{1,2}(?:\.TM)?(?:\.[A-Za-z0-9]+){2,6})\b/gi;
         const headings = [];
 
+        const getSingleCardContainer = (row) => {
+          const closestCard = row.closest('mat-expansion-panel, .card, .accordion-item, li');
+          if (closestCard) {
+            const aorCount = ((closestCard.innerText || '').match(/Analysis of Rates/gi) || []).length;
+            if (aorCount <= 1) return closestCard;
+          }
+          let cur = row;
+          for (let step = 0; step < 3 && cur.parentElement; step++) {
+            const p = cur.parentElement;
+            const aorCount = ((p.innerText || '').match(/Analysis of Rates/gi) || []).length;
+            if (aorCount <= 1 && p.getBoundingClientRect().width <= vw * 0.49) {
+              cur = p;
+            } else {
+              break;
+            }
+          }
+          return cur;
+        };
+
+        const findClickTargetInHeading = (row) => {
+          // Prefer clicking the heading title text on the left side (works reliably even for short 1-line titles like "SITE CLEANING" without "See more")
+          const rr = row.getBoundingClientRect();
+          const textEls = Array.from(row.querySelectorAll('a, span, p, b, strong, h5, h6, div'))
+            .filter((el) => {
+              if (!isVisible(el)) return false;
+              const r = el.getBoundingClientRect();
+              if (r.left > rr.left + rr.width * 0.60 || r.width < 25 || r.height < 10 || r.height > 75) return false;
+              const t = (el.innerText || '').trim();
+              if (!t || t.length < 3 || /^see\s*more$/i.test(t) || /^see\s*less$/i.test(t) || t.startsWith('₹')) return false;
+              return true;
+            })
+            .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+          return textEls[0] || row;
+        };
+
         for (let idx = 0; idx < rows.length; idx++) {
           const row = rows[idx];
           try { row.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
-          await sleep(100);
+          await sleep(120);
 
-          const getCardContainer = () => row.closest('mat-expansion-panel, .card, .accordion-item, li') || row.parentElement || row;
-          let container = getCardContainer();
+          let container = getSingleCardContainer(row);
           let text = container.innerText || '';
           codeRe.lastIndex = 0;
 
-          // If this heading card is collapsed (no SOR codes visible yet), click it to expand so Verify & Fix sees all items!
+          // Expand collapsed heading with up to 2 click attempts + polling so short titles like "SITE CLEANING" NEVER get missed!
           if (!codeRe.test(text) && !text.includes('No Specification Added')) {
-            await clickEl(row);
-            await sleep(480);
-            container = getCardContainer();
-            text = container.innerText || '';
+            for (let attempt = 0; attempt < 2; attempt++) {
+              try { row.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+              await sleep(100);
+              const target = attempt === 0 ? findClickTargetInHeading(row) : row;
+              await clickEl(target);
+              let expanded = false;
+              for (let w = 0; w < 7; w++) {
+                await sleep(150);
+                container = getSingleCardContainer(row);
+                text = container.innerText || '';
+                codeRe.lastIndex = 0;
+                if (codeRe.test(text) || text.includes('No Specification Added')) {
+                  expanded = true;
+                  break;
+                }
+              }
+              if (expanded) break;
+            }
           }
 
-          const rawTitle = (row.innerText || '').split('\n')[0].replace(/See more.*/i, '').trim();
+          const rawTitle = (row.innerText || '').split('\n')[0].replace(/See more.*/i, '').replace(/See less.*/i, '').trim();
           const items = [];
           const seenCodes = new Set();
           codeRe.lastIndex = 0;
-          // Find every SOR code match and inspect the slice of text between this code and the next code for real Qty & ₹ Amount
           const matches = [];
           let m;
           while ((m = codeRe.exec(text)) !== null) {
@@ -1399,11 +1501,9 @@ enum SecureAutomationJS {
             seenCodes.add(c);
             const sliceEnd = (mi + 1 < matches.length) ? matches[mi + 1].index : text.length;
             const block = text.slice(matches[mi].index, sliceEnd);
-            // Anchor strictly before '@' (e.g. "351.74 metre @ ₹", "726.319 sqm @ ₹", "80.0 no @ ₹") so description numbers like "50 metre" are never matched!
             const qtyM = block.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:cum|sqm|metre|meter|rmt|kg|no|nos|day|each|ls|mt|qtl)\s*@/i)
               || block.match(/(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:cum|sqm|metre|meter|rmt|kg|no|nos|day|each|ls|mt|qtl)\b/i);
             const qtyVal = qtyM ? parseFloat(qtyM[1].replace(/,/g, '')) : 0;
-            // Match final rupee amount in the item block (last ₹ number, not the unit rate after @)
             const rupeeMatches = Array.from(block.matchAll(/₹\s*(\d+(?:,\d+)*(?:\.\d+)?)/g));
             const amtVal = rupeeMatches.length > 0 ? parseFloat(rupeeMatches[rupeeMatches.length - 1][1].replace(/,/g, '')) : 0;
             items.push({ code: c, description: c, quantity: Number.isFinite(qtyVal) ? qtyVal : 0, amount: Number.isFinite(amtVal) ? amtVal : 0 });
@@ -1411,16 +1511,66 @@ enum SecureAutomationJS {
           headings.push({ index: idx, text: rawTitle, items });
         }
 
-        hideCursor();
-
-        const lumpSums = [];
-        const bodyText = document.body.innerText || '';
-        const lumpLines = bodyText.split('\n').filter((l) => /lump\s*sum|conveyance|display board|cess|contingenc|\bgst\b/i.test(l));
-        for (const l of lumpLines.slice(0, 12)) {
-          const numMatch = l.match(/(\d+(?:,\d+)*(?:\.\d+)?)/);
-          lumpSums.push({ description: l.trim(), amount: numMatch ? parseFloat(numMatch[1].replace(/,/g, '')) : 0 });
+        // Scroll left panel to the bottom so all Lump Sum cards are laid out, then scrape them accurately!
+        if (rows.length > 0) {
+          try { rows[rows.length - 1].scrollIntoView({ behavior: 'instant', block: 'start' }); } catch (_) {}
+          await sleep(180);
         }
+        const lumpSums = findLeftPanelLumpSumCards().map((c) => ({
+          description: c.description,
+          amount: c.amount
+        }));
+
+        hideCursor();
         return { headings, lumpSums };
+      }
+
+      async function deleteLumpSum(description, amount) {
+        await dismissSwalIfAny();
+        const cards = findLeftPanelLumpSumCards();
+        if (cards.length === 0) {
+          return { ok: false, message: `No Lump Sum cards found on portal to delete "${description}".` };
+        }
+        const targetDesc = String(description || '').toLowerCase();
+        const targetAmt = Number(amount) || 0;
+        const keyTokens = ['conveyance', 'gst', 'display', 'cib', 'miscellaneous', 'conting', 'worksite', 'creche', 'quality', 'survey', 'labour', 'welfare', 'cess', 'electrification', 'bft'];
+        const wantedKey = keyTokens.find((k) => targetDesc.includes(k)) || '';
+
+        let matched = cards.filter((c) => {
+          const d = c.description.toLowerCase();
+          if (wantedKey && d.includes(wantedKey)) return true;
+          return targetDesc.length >= 4 && (d.includes(targetDesc.slice(0, 12)) || targetDesc.includes(d.slice(0, 12)));
+        });
+        if (matched.length === 0) {
+          matched = cards.filter((c) => targetAmt > 0 && Math.abs(c.amount - targetAmt) <= 2.0);
+        }
+        if (matched.length === 0) {
+          return { ok: false, message: `Lump Sum "${description}" (₹${amount}) not found on portal.` };
+        }
+        // Pick closest amount if multiple share the same category
+        matched.sort((a, b) => Math.abs(a.amount - targetAmt) - Math.abs(b.amount - targetAmt));
+        const card = matched[0].el;
+        try { card.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+        await sleep(160);
+
+        let delBtn = card.querySelector('.fa-trash, .fa-trash-alt, .bi-trash, [title*="Delete" i], [aria-label*="Delete" i]');
+        if (!delBtn) {
+          const cr = card.getBoundingClientRect();
+          const icons = Array.from(card.querySelectorAll('button, a, svg, i, img, mat-icon, fa-icon, span'))
+            .filter((el) => {
+              if (!isVisible(el)) return false;
+              const r = el.getBoundingClientRect();
+              return r.width >= 10 && r.width <= 44 && r.height >= 10 && r.height <= 44 && r.left > cr.left + cr.width * 0.55;
+            })
+            .sort((a, b) => b.getBoundingClientRect().left - a.getBoundingClientRect().left);
+          delBtn = icons[0] || null;
+        }
+        if (!delBtn) {
+          return { ok: false, message: `Delete trash icon not found on Lump Sum "${description}".` };
+        }
+        const smallBtn = delBtn.closest?.('button, a');
+        await clickEl((smallBtn && smallBtn.getBoundingClientRect().width <= 56) ? smallBtn : delBtn);
+        return await confirmSwalDelete();
       }
 
       async function deleteItemInHeading(headingIndex, code) {
@@ -1491,12 +1641,13 @@ enum SecureAutomationJS {
         addLumpSum,
         scrapeCurrentEstimate,
         deleteItemInHeading,
+        deleteLumpSum,
         confirmSwalDelete,
         autoFillSecureLogin,
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V26__ = true;
+      window.__SECURE_AI_IPAD_V27__ = true;
     })();
     """#
 }
