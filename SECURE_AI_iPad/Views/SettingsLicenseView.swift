@@ -8,6 +8,7 @@ struct SettingsLicenseView: View {
     @EnvironmentObject var savedLogins: SavedLoginStore
     @Binding var geminiApiKey: String
     @Binding var showAddLoginSheet: Bool
+    @Binding var showWallpaperGallery: Bool
 
     private var pal: AppThemePalette { theme.palette }
 
@@ -105,6 +106,59 @@ struct SettingsLicenseView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+                    .onChange(of: theme.wallpaper) { _ in
+                        if theme.customWallpaperKind != .none {
+                            theme.clearCustomWallpaper()
+                        }
+                    }
+
+                    // HD Photo & 120Hz Live MP4 Wallpaper Gallery Launcher
+                    Button {
+                        showWallpaperGallery = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: theme.customWallpaperKind == .live ? "play.rectangle.fill" : "photo.on.rectangle.angled")
+                                .font(.system(size: 13, weight: .bold))
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("HD & Live MP4 Wallpapers")
+                                    .font(.system(size: 12, weight: .bold))
+                                Text(theme.customWallpaperKind == .none ? "Browse 129 Live MP4 + 250+ HD Photos (120Hz)" : "Active: \(theme.customWallpaperTitle)")
+                                    .font(.system(size: 10))
+                                    .opacity(0.88)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 9)
+                        .background(
+                            LinearGradient(
+                                colors: [pal.accent, pal.orb1],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .foregroundColor(.white)
+                        .cornerRadius(9)
+                    }
+
+                    if theme.customWallpaperKind != .none {
+                        HStack(spacing: 8) {
+                            Text("Dim")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundColor(pal.muted)
+                            Slider(value: $theme.wallpaperDimming, in: 0.10...0.75, step: 0.02)
+                                .tint(pal.accent)
+                            Button("Clear") {
+                                theme.clearCustomWallpaper()
+                            }
+                            .font(.system(size: 10.5, weight: .bold))
+                            .foregroundColor(SecureTheme.red)
+                        }
+                        .padding(.horizontal, 4)
+                    }
 
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 7) {
                         ForEach(AppThemePalette.all) { item in

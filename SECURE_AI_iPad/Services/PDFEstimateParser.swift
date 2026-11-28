@@ -342,17 +342,15 @@ final class PDFEstimateParser {
         }
     }
 
-    /// Cleans URLs/illegal characters and guarantees descriptions start with an alphabet letter
-    /// (e.g. "12 MM CM 1:4 PLASTER" -> "CM 1-4 PLASTER 12 MM", "100A BRICK FLAT SOLING" -> "BRICK FLAT SOLING 100A", "1" -> "Work").
+    /// Cleans URLs and ALL punctuation/hyphens (SECURE v2 rejects hyphens like "1-4" or "1-2-4" and turns the field into "1"!)
+    /// Strictly keeps letters, digits, and spaces only, and guarantees descriptions start with an alphabet letter
+    /// (e.g. "12 MM CM 1:4 PLASTER" -> "CM 1 4 PLASTER 12 MM", "100A BRICK FLAT SOLING" -> "BRICK FLAT SOLING 100A", "1" -> "Work").
     private func cleanAndReorderSecureDesc(_ raw: String) -> String {
         var s = raw
-            .replacingOccurrences(of: #"https?://\S+"#, with: "", options: .regularExpression)
-            .replacingOccurrences(of: #"Page\s+\d+\s+of\s+\d+"#, with: "", options: [.regularExpression, .caseInsensitive])
-            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: #"https?://\S+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"Page\s+\d+\s+of\s+\d+"#, with: " ", options: [.regularExpression, .caseInsensitive])
             .replacingOccurrences(of: "×", with: "X")
-            .replacingOccurrences(of: "–", with: "-")
-            .replacingOccurrences(of: "—", with: "-")
-            .replacingOccurrences(of: #"[^A-Za-z0-9 .+\-*()/]"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"[^A-Za-z0-9 ]"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -364,7 +362,7 @@ final class PDFEstimateParser {
         )
 
         // Smart reorder: move leading number/grade/thickness (e.g. "12 MM", "100A", "12mm") to the end so Alphabet is ALWAYS first!
-        if let re = try? NSRegularExpression(pattern: #"^([0-9][A-Za-z0-9.\-]*(?:\s+(?:MM|CM|FT|IN|INCH|M|SQM|CUM|KG))?)\s+([A-Za-z].*)$"#, options: .caseInsensitive),
+        if let re = try? NSRegularExpression(pattern: #"^([0-9][A-Za-z0-9]*(?:\s+(?:MM|CM|FT|IN|INCH|M|SQM|CUM|KG))?)\s+([A-Za-z].*)$"#, options: .caseInsensitive),
            let m = re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)),
            let r1 = Range(m.range(at: 1), in: s),
            let r2 = Range(m.range(at: 2), in: s) {
@@ -377,7 +375,7 @@ final class PDFEstimateParser {
         if s.range(of: #"^[A-Za-z]"#, options: .regularExpression) == nil {
             return "Work " + s
         }
-        return String(s.prefix(95))
+        return String(s.prefix(95)).trimmingCharacters(in: .whitespaces)
     }
 
     private func parseLumpSumTokens(_ text: String, into ls: inout LumpSumItem) {

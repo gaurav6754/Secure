@@ -60,6 +60,21 @@ final class ThemeManager: ObservableObject {
     @Published var wallpaper: WallpaperStyle {
         didSet { UserDefaults.standard.set(wallpaper.rawValue, forKey: "secure_ai_wallpaper") }
     }
+    @Published var customWallpaperKind: WallpaperKind {
+        didSet { UserDefaults.standard.set(customWallpaperKind.rawValue, forKey: "secure_ai_custom_wp_kind") }
+    }
+    @Published var customWallpaperURL: String {
+        didSet { UserDefaults.standard.set(customWallpaperURL, forKey: "secure_ai_custom_wp_url") }
+    }
+    @Published var customWallpaperFallbackURL: String {
+        didSet { UserDefaults.standard.set(customWallpaperFallbackURL, forKey: "secure_ai_custom_wp_fallback_url") }
+    }
+    @Published var customWallpaperTitle: String {
+        didSet { UserDefaults.standard.set(customWallpaperTitle, forKey: "secure_ai_custom_wp_title") }
+    }
+    @Published var wallpaperDimming: Double {
+        didSet { UserDefaults.standard.set(wallpaperDimming, forKey: "secure_ai_wp_dimming") }
+    }
 
     var palette: AppThemePalette {
         AppThemePalette.all.first(where: { $0.id == currentId }) ?? AppThemePalette.all[0]
@@ -74,19 +89,62 @@ final class ThemeManager: ObservableObject {
         }
         let wpRaw = UserDefaults.standard.string(forKey: "secure_ai_wallpaper") ?? WallpaperStyle.auroraOrbs.rawValue
         self.wallpaper = WallpaperStyle(rawValue: wpRaw) ?? .auroraOrbs
+
+        let kindRaw = UserDefaults.standard.string(forKey: "secure_ai_custom_wp_kind") ?? WallpaperKind.none.rawValue
+        self.customWallpaperKind = WallpaperKind(rawValue: kindRaw) ?? .none
+        self.customWallpaperURL = UserDefaults.standard.string(forKey: "secure_ai_custom_wp_url") ?? ""
+        self.customWallpaperFallbackURL = UserDefaults.standard.string(forKey: "secure_ai_custom_wp_fallback_url") ?? ""
+        self.customWallpaperTitle = UserDefaults.standard.string(forKey: "secure_ai_custom_wp_title") ?? ""
+        if UserDefaults.standard.object(forKey: "secure_ai_wp_dimming") == nil {
+            self.wallpaperDimming = 0.36
+        } else {
+            self.wallpaperDimming = UserDefaults.standard.double(forKey: "secure_ai_wp_dimming")
+        }
+    }
+
+    func applyCustomWallpaper(_ item: WallpaperItem) {
+        self.customWallpaperKind = item.kind
+        self.customWallpaperURL = item.url
+        self.customWallpaperFallbackURL = item.fallbackUrl ?? ""
+        self.customWallpaperTitle = item.title
+    }
+
+    func clearCustomWallpaper() {
+        self.customWallpaperKind = .none
+        self.customWallpaperURL = ""
+        self.customWallpaperFallbackURL = ""
+        self.customWallpaperTitle = ""
     }
 }
 
-/// GPU-accelerated Frosted Glass Wallpaper backdrop for the SECURE AI sidebar
+/// 120Hz ProMotion GPU-accelerated Frosted Glass + Static/Live MP4 Wallpaper backdrop for the SECURE AI sidebar
 struct FrostedWallpaperBackdrop: View {
     let palette: AppThemePalette
     let style: WallpaperStyle
     let frosted: Bool
+    var customKind: WallpaperKind = .none
+    var customURL: String = ""
+    var customFallbackURL: String = ""
+    var dimming: Double = 0.36
+    var isActive: Bool = true
 
     var body: some View {
         ZStack {
             palette.side
-            if style == .auroraOrbs {
+
+            if customKind == .live && !customURL.isEmpty {
+                LiveWallpaperPlayerView(
+                    urlString: customURL,
+                    fallbackUrlString: customFallbackURL,
+                    isActive: isActive
+                )
+                .clipped()
+                Color.black.opacity(min(max(dimming, 0.05), 0.80))
+            } else if customKind == .static && !customURL.isEmpty {
+                StaticWallpaperImageView(urlString: customURL, isThumbnail: false)
+                    .clipped()
+                Color.black.opacity(min(max(dimming, 0.05), 0.80))
+            } else if style == .auroraOrbs {
                 GeometryReader { geo in
                     Circle()
                         .fill(palette.orb1.opacity(palette.isLight ? 0.25 : 0.36))
@@ -107,12 +165,14 @@ struct FrostedWallpaperBackdrop: View {
                     endPoint: .bottomTrailing
                 )
             }
+
             if frosted {
                 Rectangle()
-                    .fill(palette.isLight ? .ultraThinMaterial : .ultraThinMaterial)
-                    .opacity(palette.isLight ? 0.55 : 0.42)
+                    .fill(.ultraThinMaterial)
+                    .opacity(customKind == .none ? (palette.isLight ? 0.55 : 0.42) : (palette.isLight ? 0.38 : 0.28))
             }
         }
+        .clipped()
         .ignoresSafeArea()
     }
 }

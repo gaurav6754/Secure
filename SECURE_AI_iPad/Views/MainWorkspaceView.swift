@@ -30,6 +30,7 @@ struct MainWorkspaceView: View {
     @State private var showSidebar: Bool = true
     @State private var pendingAIPDFAttachment: AIAttachment? = nil
     @State private var showAddLoginSheet: Bool = false
+    @State private var showWallpaperGallery: Bool = false
     @AppStorage("secure_ai_gemini_key") private var geminiApiKey: String = ""
 
     private var pal: AppThemePalette { theme.palette }
@@ -47,7 +48,12 @@ struct MainWorkspaceView: View {
                                 FrostedWallpaperBackdrop(
                                     palette: pal,
                                     style: theme.wallpaper,
-                                    frosted: theme.frostedGlass
+                                    frosted: theme.frostedGlass,
+                                    customKind: theme.customWallpaperKind,
+                                    customURL: theme.customWallpaperURL,
+                                    customFallbackURL: theme.customWallpaperFallbackURL,
+                                    dimming: theme.wallpaperDimming,
+                                    isActive: showSidebar && scenePhase == .active
                                 )
                             )
                             .overlay(Rectangle().frame(width: 1).foregroundColor(pal.line.opacity(0.6)), alignment: .trailing)
@@ -90,6 +96,10 @@ struct MainWorkspaceView: View {
         .sheet(isPresented: $showAddLoginSheet) {
             AddLoginIDSheet()
                 .environmentObject(savedLogins)
+                .environmentObject(theme)
+        }
+        .sheet(isPresented: $showWallpaperGallery) {
+            WallpaperGallerySheet()
                 .environmentObject(theme)
         }
         .onChange(of: scenePhase) { phase in
@@ -227,7 +237,7 @@ struct MainWorkspaceView: View {
                         }
                     })
                 case .settings:
-                    SettingsLicenseView(geminiApiKey: $geminiApiKey, showAddLoginSheet: $showAddLoginSheet)
+                    SettingsLicenseView(geminiApiKey: $geminiApiKey, showAddLoginSheet: $showAddLoginSheet, showWallpaperGallery: $showWallpaperGallery)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

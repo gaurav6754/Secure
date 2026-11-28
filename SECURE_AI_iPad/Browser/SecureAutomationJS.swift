@@ -8,7 +8,7 @@ import Foundation
 enum SecureAutomationJS {
     static let engineScript: String = #"""
     (function() {
-      if (window.__SECURE_AI_IPAD_V25__) return;
+      if (window.__SECURE_AI_IPAD_V26__) return;
 
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -107,24 +107,24 @@ enum SecureAutomationJS {
       }
 
       function sanitizeSecureDesc(raw, maxLen = 95) {
+        // SECURE v2 rejects hyphens ("1-4", "1-2-4") & punctuation in Item Description and replaces the field with "1"!
+        // Keep strictly letters, digits, and spaces only, always starting with an alphabet letter.
         let s = String(raw == null ? '' : raw)
           .replace(/https?:\/\/\S+/gi, ' ')
           .replace(/Page\s+\d+\s+of\s+\d+/gi, ' ')
           .replace(/[\r\n\t]+/g, ' ')
-          .replace(/:/g, '-')
           .replace(/[×xX](?=\s*\d)/g, 'X')
-          .replace(/[–—]/g, '-')
-          .replace(/[^A-Za-z0-9 .+\-*()/]/g, ' ')
+          .replace(/[^A-Za-z0-9 ]/g, ' ')
           .replace(/\s+/g, ' ')
           .trim();
         // Strip leading lone serial number like "1 GW PCC..." -> "GW PCC..."
         s = s.replace(/^\d{1,2}\s+(?!MM\b|CM\b|FT\b|IN\b|INCH\b|M\b|SQM\b|CUM\b|KG\b)(?=[A-Za-z])/i, '');
-        // Smart reorder: "12 MM CM 1-4 PLASTER" -> "CM 1-4 PLASTER 12 MM", "100A BRICK..." -> "BRICK... 100A"
-        const leadNum = s.match(/^([0-9][A-Za-z0-9.\-]*(?:\s+(?:MM|CM|FT|IN|INCH|M|SQM|CUM|KG))?)\s+([A-Za-z].*)$/i);
+        // Smart reorder: "12 MM CM 1 4 PLASTER" -> "CM 1 4 PLASTER 12 MM", "100A BRICK..." -> "BRICK... 100A"
+        const leadNum = s.match(/^([0-9][A-Za-z0-9]*(?:\s+(?:MM|CM|FT|IN|INCH|M|SQM|CUM|KG))?)\s+([A-Za-z].*)$/i);
         if (leadNum) {
           s = `${leadNum[2]} ${leadNum[1]}`.trim();
         }
-        // SECURE v2 rejects Item Description / Heading starting with a digit or symbol (and never write lone "1")!
+        // Never allow empty, lone digit ("1"), or non-letter start
         if (!s || /^\d+$/.test(s)) {
           s = 'Work';
         } else if (!/^[A-Za-z]/.test(s)) {
@@ -1496,7 +1496,7 @@ enum SecureAutomationJS {
         hideCursor,
         isPortalLoading
       };
-      window.__SECURE_AI_IPAD_V25__ = true;
+      window.__SECURE_AI_IPAD_V26__ = true;
     })();
     """#
 }
